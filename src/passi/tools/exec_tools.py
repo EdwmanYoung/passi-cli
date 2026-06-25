@@ -111,6 +111,7 @@ class RunPythonTool(CallableTool[RunPythonParams]):
                 ["python", str(script_path.resolve())],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=params.timeout,
                 cwd=str(self._project_root),
                 env=env,
@@ -118,8 +119,10 @@ class RunPythonTool(CallableTool[RunPythonParams]):
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             # Write full logs to run dir
-            (run_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
-            (run_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
+            stdout_text = result.stdout or ""
+            stderr_text = result.stderr or ""
+            (run_dir / "stdout.log").write_text(stdout_text, encoding="utf-8")
+            (run_dir / "stderr.log").write_text(stderr_text, encoding="utf-8")
 
             # Discover output files produced by the script
             output_files = _finalize_run_dir(
@@ -134,8 +137,8 @@ class RunPythonTool(CallableTool[RunPythonParams]):
             return {
                 "success": result.returncode == 0,
                 "exit_code": result.returncode,
-                "stdout": result.stdout[-5000:],
-                "stderr": result.stderr[-5000:],
+                "stdout": (result.stdout or "")[-5000:],
+                "stderr": (result.stderr or "")[-5000:],
                 "duration_ms": round(elapsed_ms, 1),
                 "run_dir": str(run_dir),
                 "output_files": output_files,
@@ -303,14 +306,17 @@ class RunRTool(CallableTool[RunRParams]):
                 [rscript, "--no-save", str(script_path.resolve())],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=params.timeout,
                 cwd=str(self._project_root),
             )
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             # Write full logs to run dir
-            (run_dir / "stdout.log").write_text(result.stdout, encoding="utf-8")
-            (run_dir / "stderr.log").write_text(result.stderr, encoding="utf-8")
+            stdout_text = result.stdout or ""
+            stderr_text = result.stderr or ""
+            (run_dir / "stdout.log").write_text(stdout_text, encoding="utf-8")
+            (run_dir / "stderr.log").write_text(stderr_text, encoding="utf-8")
 
             output_files = _finalize_run_dir(
                 run_dir=run_dir,
@@ -324,8 +330,8 @@ class RunRTool(CallableTool[RunRParams]):
             return {
                 "success": result.returncode == 0,
                 "exit_code": result.returncode,
-                "stdout": result.stdout[-5000:],
-                "stderr": result.stderr[-5000:],
+                "stdout": (result.stdout or "")[-5000:],
+                "stderr": (result.stderr or "")[-5000:],
                 "duration_ms": round(elapsed_ms, 1),
                 "execution_method": "Rscript",
                 "run_dir": str(run_dir),

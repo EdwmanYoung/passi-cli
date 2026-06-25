@@ -284,7 +284,7 @@ class TestSessionConfig:
 
     def test_default_sessions_dir(self):
         cfg = SessionConfig()
-        assert cfg.sessions_dir == Path("./sessions")
+        assert cfg.sessions_dir == Path.home() / ".passi" / "sessions"
 
     def test_checkpoint_interval_default(self):
         cfg = SessionConfig()

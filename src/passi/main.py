@@ -37,6 +37,10 @@ def main(ctx: click.Context, config_path: str | None, provider: str | None, debu
     """
     ctx.ensure_object(dict)
 
+    # Ensure ~/.passi/ exists before loading config
+    from passi.config import _ensure_passi_home
+    _ensure_passi_home()
+
     # Load configuration
     config = load_config(config_path)
     if debug:

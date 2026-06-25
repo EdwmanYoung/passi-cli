@@ -1,16 +1,71 @@
 """Configuration management for PassiAgent.
 
 Loads settings from environment variables, .env files, and config files.
+Config priority (lowest to highest):
+  1. Code defaults
+  2. ~/.passi/settings.yaml (user-global)
+  3. CLI --config YAML/JSON file
+  4. CWD .env file (project-specific)
+  5. PASSI_* environment variables
+  6. PASSI_CONFIG JSON env override
 """
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Optional
 
+import yaml
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# ── Passi home directory ──────────────────────────────────────────────────
+
+
+def _passi_home() -> Path:
+    """Return the Passi user config directory (cross-project)."""
+    return Path.home() / ".passi"
+
+
+SETTINGS_TEMPLATE = """\
+# PassiAgent — User Settings
+# Location: ~/.passi/settings.yaml
+# CWD .env files and PASSI_* environment variables override these settings.
+
+default_provider: anthropic
+
+anthropic:
+  api_key: ""
+  base_url: https://api.deepseek.com/anthropic
+  model: deepseek-v4-pro
+  max_tokens: 8192
+  temperature: 0.0
+
+openai:
+  api_key: ""
+  base_url: https://api.deepseek.com
+  model: deepseek-v4-pro
+  max_tokens: 4096
+  temperature: 0.0
+
+execution:
+  timeout_seconds: 300
+"""
+
+
+def _ensure_passi_home() -> Path:
+    """Create ~/.passi/ directory with sessions/ and settings template on first run.
+
+    Idempotent — safe to call on every startup.
+    """
+    home = _passi_home()
+    (home / "sessions").mkdir(parents=True, exist_ok=True)
+    settings_file = home / "settings.yaml"
+    if not settings_file.exists():
+        settings_file.write_text(SETTINGS_TEMPLATE, encoding="utf-8")
+    return home
 
 
 class LLMProviderConfig(BaseSettings):
@@ -159,7 +214,7 @@ def _is_r_home(path: Path) -> bool:
 class SessionConfig(BaseSettings):
     """Session management configuration."""
 
-    sessions_dir: Path = Path("./sessions")
+    sessions_dir: Path = Path.home() / ".passi" / "sessions"
     max_sessions: int = 100
     checkpoint_interval: int = 5  # messages between auto-checkpoints
     wire_file: str = "wire.jsonl"
@@ -220,38 +275,46 @@ class PassiConfig(BaseSettings):
 
 
 def load_config(config_path: str | Path | None = None) -> PassiConfig:
-    """Load configuration from a YAML/JSON file and environment variables.
+    """Load configuration with layered priority.
 
-    Environment variables take precedence over file settings.
+    Layers (lowest to highest):
+      1. Code defaults
+      2. ~/.passi/settings.yaml (user-global)
+      3. CLI --config YAML/JSON file
+      4. CWD .env file (via pydantic-settings env_file)
+      5. PASSI_* environment variables
+      6. PASSI_CONFIG JSON env override
     """
+    _ensure_passi_home()
+
     file_data: dict = {}
+
+    # Layer 2: ~/.passi/settings.yaml (lowest user override)
+    passi_settings = _passi_home() / "settings.yaml"
+    if passi_settings.exists():
+        data = yaml.safe_load(passi_settings.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            file_data.update(data)
+
+    # Layer 3: CLI --config YAML/JSON file
     if config_path is not None:
         path = Path(config_path)
-        if not path.exists():
-            pass  # Silently skip — use defaults + env vars
-        elif path.suffix in (".yaml", ".yml"):
-            import yaml
+        if path.exists():
+            if path.suffix in (".yaml", ".yml"):
+                data = yaml.safe_load(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    file_data.update(data)
+            elif path.suffix == ".json":
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    file_data.update(data)
 
-            with open(path) as f:
-                data = yaml.safe_load(f)
-            if data:
-                file_data = data
-        elif path.suffix == ".json":
-            import json
-
-            with open(path) as f:
-                data = json.load(f)
-            if data:
-                file_data = data
-
-    # Start with defaults, apply file data, env vars naturally take precedence
+    # Create config — CWD .env (Layer 4) and env vars (Layer 5) handled by pydantic-settings
     config = PassiConfig(**file_data) if file_data else PassiConfig()
 
-    # Apply environment variable overrides
+    # Layer 6: PASSI_CONFIG JSON env override (highest priority)
     env_override = os.environ.get("PASSI_CONFIG", "")
     if env_override:
-        import json
-
         override = json.loads(env_override)
         config = PassiConfig(**{**config.model_dump(), **override})
     return config
