@@ -185,7 +185,7 @@ class HookManager(WireListener):
         try:
             if self._hooks_path.exists():
                 data = yaml.safe_load(self._hooks_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and "hooks" in data:
+                if isinstance(data, dict) and "hooks" in data and data["hooks"] is not None:
                     self._hooks = [
                         HookConfig(**h)
                         for h in data["hooks"]

@@ -773,16 +773,16 @@ class PassiCLI:
             )
         else:
             params_str = str(params_or_str)[:200]
-        self.console.print(f"[{TOOL_STYLE.style}]🔧 {name}({params_str})[/]")
+        self.console.print(f"🔧 {name}({params_str})", style=TOOL_STYLE)
 
     def _print_system(self, text: str | Markdown) -> None:
         if isinstance(text, str):
-            self.console.print(f"[{SYSTEM_STYLE.style}]{text}[/]")
+            self.console.print(text, style=SYSTEM_STYLE)
         else:
             self.console.print(text)
 
     def _print_error(self, text: str) -> None:
-        self.console.print(f"[{ERROR_STYLE.style}]✗ {text}[/]")
+        self.console.print(f"✗ {text}", style=ERROR_STYLE)
 
 
 # ── Entry Point ─────────────────────────────────────────────────────────

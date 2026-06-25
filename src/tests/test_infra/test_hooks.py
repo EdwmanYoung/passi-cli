@@ -249,6 +249,22 @@ class TestHookManager:
             with patch.object(mgr, '_execute_hook', side_effect=fake_exec):
                 mgr.notify_error("run_python", "something broke")
 
+    def test_loads_hooks_with_null_value(self):
+        """Regression: YAML with hooks: (null) should not crash."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hooks_path = Path(tmpdir) / "hooks.yaml"
+            hooks_path.write_text("hooks:\n", encoding="utf-8")  # YAML null
+            mgr = HookManager(hooks_path)
+            assert mgr.hooks == []  # should not crash, return empty
+
+    def test_loads_hooks_with_null_explicit(self):
+        """Regression: YAML with explicit null should not crash."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hooks_path = Path(tmpdir) / "hooks.yaml"
+            hooks_path.write_text("hooks: null\n", encoding="utf-8")
+            mgr = HookManager(hooks_path)
+            assert mgr.hooks == []
+
     def test_wire_listener_protocol(self):
         """HookManager satisfies WireListener protocol."""
         mgr = HookManager(Path("/nonexistent/hooks.yaml"))
