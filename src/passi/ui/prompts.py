@@ -93,9 +93,23 @@ MULTI_OMICS_PROMPT = """
 """
 
 
+PLAN_MODE_PROMPT = """
+## Plan Mode
+For complex multi-step bioinformatics analyses, you MUST use the planning system:
+1. When the user requests a multi-step analysis, first call `create_plan` to structure the workflow
+2. Present the plan to the user for review and approval — do NOT execute until approved
+3. After each step, call `update_plan_status` to mark progress (running → done/failed)
+4. Use `get_plan` to check the current plan state when resuming or reviewing
+5. For failures, update the step status to failed with an error message, then suggest alternatives
+6. Steps should be ordered logically: QC → preprocessing → core analysis → visualization → export
+
+Plan mode helps ensure reproducibility, auditability, and user oversight of complex analyses.
+"""
+
+
 def get_system_prompt(domain: str | None = None) -> str:
     """Get the complete system prompt for a given domain."""
-    parts = [BASE_PROMPT]
+    parts = [BASE_PROMPT, PLAN_MODE_PROMPT]
 
     domain_prompts = {
         "transcriptomics": TRANSCRIPTOMICS_PROMPT,

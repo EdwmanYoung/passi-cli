@@ -50,7 +50,10 @@ class AnthropicClient(LLMClient):
         super().__init__(config)
         import anthropic
 
-        self._client = anthropic.AsyncAnthropic(api_key=config.api_key)
+        kwargs: dict[str, Any] = {"api_key": config.api_key}
+        if config.base_url:
+            kwargs["base_url"] = config.base_url
+        self._client = anthropic.AsyncAnthropic(**kwargs)
         self._model = config.model
 
     async def chat(
@@ -63,7 +66,7 @@ class AnthropicClient(LLMClient):
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": max_tokens or self.config.max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else self.config.max_tokens,
             "temperature": temperature if temperature is not None else self.config.temperature,
             "messages": self._convert_messages(messages),
         }
@@ -71,6 +74,14 @@ class AnthropicClient(LLMClient):
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
+
+        # Extended thinking (Anthropic only)
+        if hasattr(self.config, "thinking_budget_tokens") and self.config.thinking_budget_tokens > 0:
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self.config.thinking_budget_tokens,
+            }
+            kwargs["max_tokens"] = max(kwargs["max_tokens"], self.config.thinking_budget_tokens + 1024)
 
         response = await self._client.messages.create(**kwargs)
 
@@ -167,7 +178,7 @@ class OpenAIClient(LLMClient):
 
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": max_tokens or self.config.max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else self.config.max_tokens,
             "temperature": temperature if temperature is not None else self.config.temperature,
             "messages": api_messages,
         }

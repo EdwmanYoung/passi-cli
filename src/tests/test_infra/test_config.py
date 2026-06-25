@@ -27,10 +27,11 @@ class TestLLMProviderConfig:
     def test_anthropic_config_defaults(self):
         cfg = AnthropicConfig()
         assert cfg.model == "claude-sonnet-4-6"
-        assert cfg.max_tokens == 8192
+        assert cfg.max_tokens == 16384
         assert cfg.temperature == 0.0
         assert cfg.enabled is True
         assert cfg.api_key == ""
+        assert cfg.thinking_budget_tokens == 0
 
     def test_openai_config_defaults(self):
         cfg = OpenAIConfig()
@@ -50,6 +51,15 @@ class TestLLMProviderConfig:
         assert cfg.model == "test-model"
         assert cfg.max_tokens == 100
 
+    def test_tool_call_max_tokens_default(self):
+        cfg = LLMProviderConfig()
+        assert cfg.tool_call_max_tokens == 4096
+
+    def test_tool_call_max_tokens_via_env(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PASSI_ANTHROPIC__TOOL_CALL_MAX_TOKENS", "2048")
+        cfg = PassiConfig()
+        assert cfg.anthropic.tool_call_max_tokens == 2048
+
 
 class TestPassiConfigDefaults:
     """PassiConfig default values and structure."""
@@ -59,12 +69,12 @@ class TestPassiConfigDefaults:
         assert cfg.default_provider == "anthropic"
 
     def test_anthropic_nested_config(self):
-        cfg = PassiConfig()
+        cfg = PassiConfig(anthropic={"model": "claude-sonnet-4-6"})
         assert isinstance(cfg.anthropic, AnthropicConfig)
         assert cfg.anthropic.model == "claude-sonnet-4-6"
 
     def test_openai_nested_config(self):
-        cfg = PassiConfig()
+        cfg = PassiConfig(openai={"model": "gpt-4o", "base_url": None})
         assert isinstance(cfg.openai, OpenAIConfig)
         assert cfg.openai.model == "gpt-4o"
 
@@ -102,7 +112,7 @@ class TestGetLLMConfig:
         assert result.model == "claude-opus"
 
     def test_get_openai_returns_openai_config(self):
-        cfg = PassiConfig(openai={"api_key": "oai-key"})
+        cfg = PassiConfig(openai={"api_key": "oai-key", "model": "gpt-4o", "base_url": None})
         result = cfg.get_llm_config("openai")
         assert result.api_key == "oai-key"
         assert result.model == "gpt-4o"

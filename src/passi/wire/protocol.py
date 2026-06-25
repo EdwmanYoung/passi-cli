@@ -28,6 +28,10 @@ class EventType:
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     CHECKPOINT = "checkpoint"
+    PLAN_CREATED = "plan_created"
+    PLAN_STEP_START = "plan_step_start"
+    PLAN_STEP_COMPLETE = "plan_step_complete"
+    PLAN_STEP_FAILED = "plan_step_failed"
 
 
 class WireEvent(BaseModel):

@@ -3,11 +3,11 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "digitagent"
+name = "passi"
 version = "0.1.0"
 description = "Passi agent for multi-omics bioinformatics downstream analysis"
 requires-python = ">=3.10"
-authors = [{name = "DigitAgent Team"}]
+authors = [{name = "PassiAgent Team"}]
 readme = "README.md"
 license = {text = "MIT"}
 
@@ -75,8 +75,8 @@ passi = "passi.main:main"
 passi-server = "passi.api.server:main"
 
 [project.urls]
-Homepage = "https://github.com/digitagent/digitagent"
-Documentation = "https://digitagent.readthedocs.io"
+Homepage = "https://github.com/EdwmanYoung/passi-cli"
+Documentation = "https://github.com/EdwmanYoung/passi-cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -96,3 +96,7 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: real API calls (requires valid API key in .env)",
+    "slow: tests that take longer than 2 seconds",
+]

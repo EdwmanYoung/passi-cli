@@ -57,7 +57,7 @@ def init_rpy2(r_home: str = "", r_lib_path: str = "") -> dict[str, Any]:
     ----------
     r_home:
         Path to R home (e.g. ``D:/project/R``). If empty, uses the
-        ``R_HOME`` / ``HARNESS_R_HOME`` env vars.
+        ``R_HOME`` / ``PASSI_R_HOME`` env vars.
     r_lib_path:
         Custom R library path. Set as ``R_LIBS_USER``.  If empty, uses the
         value already in the environment.
@@ -74,7 +74,7 @@ def init_rpy2(r_home: str = "", r_lib_path: str = "") -> dict[str, Any]:
 
     # ── Resolve R_HOME ──
     if not r_home:
-        r_home = os.environ.get("HARNESS_R_HOME", os.environ.get("R_HOME", ""))
+        r_home = os.environ.get("PASSI_R_HOME", os.environ.get("R_HOME", ""))
 
     if r_home:
         r_home_path = Path(r_home)
@@ -84,7 +84,7 @@ def init_rpy2(r_home: str = "", r_lib_path: str = "") -> dict[str, Any]:
             return _rpy2_status
     else:
         _rpy2_ready = False
-        _rpy2_status = {"ready": False, "r_home": "", "error": "R_HOME not set — configure HARNESS_EXECUTION__R_HOME"}
+        _rpy2_status = {"ready": False, "r_home": "", "error": "R_HOME not set — configure PASSI_EXECUTION__R_HOME"}
         return _rpy2_status
 
     os.environ["R_HOME"] = str(r_home_path)

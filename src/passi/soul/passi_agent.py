@@ -14,7 +14,9 @@ from typing import Any, AsyncIterator
 from passi.config import PassiConfig
 from passi.infra.context import ContextManager
 from passi.infra.llm_client import LLMClient
+from passi.infra.plan import PlanManager
 from passi.infra.provenance import ProvenanceTracker
+from passi.infra.task_tracker import Task, TaskTracker
 from passi.infra.runtime import Runtime
 from passi.infra.session import SessionManager
 from passi.soul.protocol import AgentMessage, AgentStreamEvent, Soul
@@ -68,6 +70,8 @@ class PassiAgent(Soul):
         self._llm_client: LLMClient | None = None
         self._tool_registry: ToolRegistry | None = None
         self._provenance: ProvenanceTracker | None = None
+        self._plan_manager: PlanManager | None = None
+        self._task_tracker: TaskTracker | None = None
         self._initialized: bool = False
 
     async def initialize(self) -> None:
@@ -78,6 +82,19 @@ class PassiAgent(Soul):
         self._llm_client = self.runtime.get_llm_client()
         self._tool_registry = self._create_tool_registry()
         self._provenance = ProvenanceTracker(self.config.output_dir)
+
+        # ── Plan manager ──
+        session = self.runtime.session.active_session
+        session_dir = (
+            self.config.session.sessions_dir / session.session_id
+            if session
+            else self.config.session.sessions_dir
+        )
+        self._plan_manager = PlanManager(session_dir)
+        self._plan_manager.load_plan()  # Load existing plan if present
+
+        self._task_tracker = TaskTracker(session_dir)
+        self._task_tracker.load_tasks()  # Load existing tasks if present
 
         # ── Initialize R environment ──
         exec_cfg = self.config.execution
@@ -141,6 +158,7 @@ class PassiAgent(Soul):
                 messages=context["messages"],
                 tools=context.get("tools"),
                 system=context["system"],
+                max_tokens=self.config.get_llm_config().tool_call_max_tokens,
             )
 
             # Handle text response
@@ -159,6 +177,19 @@ class PassiAgent(Soul):
                 tool_name = tc["name"]
                 tool_input = tc.get("input", {})
 
+                # ── Task tracking: create task ──
+                plan_step_id = ""
+                if self._plan_manager is not None:
+                    current_step = self._plan_manager.get_current_step()
+                    if current_step is not None:
+                        plan_step_id = current_step.step_id
+
+                task = None
+                if self._task_tracker is not None:
+                    task = self._task_tracker.create_task(
+                        tool_name, tool_input, step_id=plan_step_id
+                    )
+
                 # Emit tool call
                 self.wire.emit(
                     EventType.TOOL_CALL,
@@ -172,7 +203,7 @@ class PassiAgent(Soul):
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
                 # Record provenance
-                self._provenance.record_step(
+                record = self._provenance.record_step(
                     tool_name=tool_name,
                     tool_params=tool_input,
                     exit_code=0 if result.get("success") else 1,
@@ -181,12 +212,25 @@ class PassiAgent(Soul):
                     session_id=sid,
                 )
 
+                # ── Task tracking: complete task ──
+                if self._task_tracker is not None and task is not None:
+                    self._task_tracker.complete_task(
+                        task.task_id,
+                        success=result.get("success", False),
+                        result_summary=str(result.get("result", ""))[:200],
+                        error=result.get("error", ""),
+                        provenance_step_id=record.step_id,
+                    )
+
                 # Emit tool result
                 self.wire.emit(
                     EventType.TOOL_RESULT,
                     {"name": tool_name, "result": result},
                     sid,
                 )
+
+                # Emit plan-related events
+                self._emit_plan_event(tool_name, tool_input, result, sid)
 
                 # Add tool result to context
                 result_text = json.dumps(result, ensure_ascii=False, default=str)
@@ -274,9 +318,39 @@ class PassiAgent(Soul):
             self.wire.emit(EventType.SESSION_END, session_id=session.session_id)
         await self.runtime.shutdown()
 
+    def get_plan(self):
+        """Get the current analysis plan, if any."""
+        from passi.infra.plan import AnalysisPlan
+        if self._plan_manager is None:
+            return None
+        return self._plan_manager.get_plan()
+
+    def get_tasks(self) -> list[Task]:
+        """Get all recorded tasks from the current session."""
+        if self._task_tracker is None:
+            return []
+        return self._task_tracker.get_tasks()
+
+    def get_task(self, task_id: str) -> Task | None:
+        """Get a specific task by ID."""
+        if self._task_tracker is None:
+            return None
+        return self._task_tracker.get_task(task_id)
+
     def _create_tool_registry(self) -> ToolRegistry:
         """Create and populate the tool registry with all available tools."""
         registry = ToolRegistry()
+
+        # System / plan tools
+        from passi.tools.system_tools import (
+            CreatePlanTool,
+            GetPlanTool,
+            UpdatePlanStatusTool,
+        )
+
+        registry.register(CreatePlanTool(self._plan_manager), category="system")
+        registry.register(UpdatePlanStatusTool(self._plan_manager), category="system")
+        registry.register(GetPlanTool(self._plan_manager), category="system")
 
         # I/O tools
         from passi.tools.io_tools import (
@@ -357,3 +431,51 @@ class PassiAgent(Soul):
         registry.register(surv_tool, category="clinical")
 
         return registry
+
+    def _emit_plan_event(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        result: dict[str, Any],
+        session_id: str,
+    ) -> None:
+        """Emit plan-related wire events based on tool execution results."""
+        plan_events = {
+            "create_plan": (EventType.PLAN_CREATED, result.get("plan_id")),
+            "update_plan_status": (None, None),  # Handled below based on status
+        }
+
+        if tool_name == "create_plan" and result.get("success"):
+            self.wire.emit(
+                EventType.PLAN_CREATED,
+                {
+                    "plan_id": result.get("plan_id"),
+                    "title": result.get("title"),
+                    "steps_count": result.get("steps_count"),
+                },
+                session_id,
+            )
+        elif tool_name == "update_plan_status" and result.get("success"):
+            status = tool_input.get("status", "")
+            step_id = tool_input.get("step_id", "")
+            if status == "running":
+                self.wire.emit(
+                    EventType.PLAN_STEP_START,
+                    {"step_id": step_id},
+                    session_id,
+                )
+            elif status == "done":
+                self.wire.emit(
+                    EventType.PLAN_STEP_COMPLETE,
+                    {"step_id": step_id},
+                    session_id,
+                )
+            elif status == "failed":
+                self.wire.emit(
+                    EventType.PLAN_STEP_FAILED,
+                    {
+                        "step_id": step_id,
+                        "error": tool_input.get("error_message", ""),
+                    },
+                    session_id,
+                )

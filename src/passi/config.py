@@ -20,13 +20,15 @@ class LLMProviderConfig(BaseSettings):
     model: str = ""
     base_url: Optional[str] = None
     max_tokens: int = 4096
+    tool_call_max_tokens: int = 4096  # token budget for tool-calling iterations
     temperature: float = 0.0
     enabled: bool = True
 
 
 class AnthropicConfig(LLMProviderConfig):
     model: str = "claude-sonnet-4-6"
-    max_tokens: int = 8192
+    max_tokens: int = 16384
+    thinking_budget_tokens: int = 0  # 0 disables extended thinking
 
 
 class OpenAIConfig(LLMProviderConfig):

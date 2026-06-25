@@ -1,4 +1,4 @@
-# Setup R-Portable for HarnessAgent
+# Setup R-Portable for PassiAgent
 # Downloads portable R to the project directory and configures rpy2.
 #
 # Usage:
@@ -17,15 +17,15 @@ $RPortableDir = Join-Path $ProjectRoot "R-Portable"
 $RHome = Join-Path $RPortableDir "App\R-Portable"
 $RBin = Join-Path $RHome "bin"
 
-Write-Host "=== HarnessAgent R-Portable Setup ===" -ForegroundColor Cyan
+Write-Host "=== PassiAgent R-Portable Setup ===" -ForegroundColor Cyan
 Write-Host "  Project: $ProjectRoot"
 Write-Host "  R Version: $RVersion"
 Write-Host "  Target: $RPortableDir"
 
 # ── Check if already installed ──
-if ($env:HARNESS_R_HOME) {
-    $existing = $env:HARNESS_R_HOME
-    Write-Host "`n[INFO] HARNESS_R_HOME already set to: $existing" -ForegroundColor Yellow
+if ($env:PASSI_R_HOME) {
+    $existing = $env:PASSI_R_HOME
+    Write-Host "`n[INFO] PASSI_R_HOME already set to: $existing" -ForegroundColor Yellow
 }
 if (Test-Path (Join-Path $RBin "R.exe")) {
     Write-Host "[INFO] R-Portable already exists at: $RHome" -ForegroundColor Green
@@ -108,15 +108,15 @@ for (p in pkgs) {
 # ── Generate .env config ──
 $envFile = Join-Path $ProjectRoot ".env"
 $envContent = @"
-# HarnessAgent R Configuration
-HARNESS_EXECUTION__R_HOME=$($RHome -replace '\\','\\')
-HARNESS_EXECUTION__R_PATH=$($RBin -replace '\\','\\')\Rscript.exe
-HARNESS_EXECUTION__RPY2_ENABLED=true
+# PassiAgent R Configuration
+PASSI_EXECUTION__R_HOME=$($RHome -replace '\\','\\')
+PASSI_EXECUTION__R_PATH=$($RBin -replace '\\','\\')\Rscript.exe
+PASSI_EXECUTION__RPY2_ENABLED=true
 
 # Add R to PATH for rpy2 (important on Windows)
 # The R.dll must be findable — rpy2 uses R_HOME/bin/<arch>/R.dll
 # Set R_LIBS_USER if you want a custom library path
-HARNESS_EXECUTION__R_LIB_PATH=
+PASSI_EXECUTION__R_LIB_PATH=
 "@
 
 # Only write if .env doesn't exist
