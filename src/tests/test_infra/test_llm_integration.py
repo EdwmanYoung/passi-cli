@@ -113,7 +113,7 @@ class TestAnthropicClientReal:
                 "content": "List the top 10 most common bioinformatics file formats "
                            "and give a one-sentence description of each.",
             }],
-            max_tokens=1024,
+            max_tokens=2048,
         )
         _report_latency("anthropic long response", t0)
 
