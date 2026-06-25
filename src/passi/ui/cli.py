@@ -674,7 +674,13 @@ class PassiCLI:
     # ── Shortcut Listener ──────────────────────────────────────────────
 
     def _start_shortcut_listener(self) -> None:
-        """Start a background thread for keyboard shortcuts."""
+        """Start a background thread for keyboard shortcuts.
+
+        Only starts if stdin is a real console (not redirected/pipe).
+        """
+        if not sys.stdin.isatty():
+            return  # No real console — shortcuts unavailable
+
         self._shortcut_listener = threading.Thread(
             target=self._shortcut_loop, daemon=True
         )
@@ -685,17 +691,12 @@ class PassiCLI:
         # The daemon thread will exit with the process
 
     def _shortcut_loop(self) -> None:
-        """Listen for keyboard shortcuts in background thread.
-
-        Uses msvcrt on Windows for Shift+Tab detection.
-        Falls back gracefully if not supported.
-        """
+        """Listen for keyboard shortcuts in background thread."""
         try:
             if sys.platform == "win32":
                 self._shortcut_loop_win32()
-            # Unix: would use tty/termios, but Prompt.ask() captures stdin
         except Exception:
-            pass  # Shortcut listener is a bonus, failures are silent
+            pass  # Silently exit — shortcuts are optional
 
     def _shortcut_loop_win32(self) -> None:
         """Windows-specific shortcut detection using msvcrt."""
@@ -705,22 +706,20 @@ class PassiCLI:
             try:
                 if msvcrt.kbhit():
                     ch = msvcrt.getch()
-                    # Shift+Tab on Windows terminal sends specific scan codes
-                    # In most terminals: Ctrl+Shift+I or similar
-                    # We check for Ctrl+T as an alternative mode-switch key
-                    if ch == b'\x14':  # Ctrl+T
+                    if ch == b'\x14':  # Ctrl+T → cycle mode
                         self._mode_switch_requested.set()
-                    elif ch == b'\x13':  # Ctrl+S
+                    elif ch == b'\x13':  # Ctrl+S → save
                         self._print_system("[Ctrl+S] Save checkpoint requested")
-                    elif ch == b'\x0c':  # Ctrl+L
+                    elif ch == b'\x0c':  # Ctrl+L → clear
                         self.console.clear()
                 else:
-                    # Poll at 100ms to avoid CPU spin
                     import time
                     time.sleep(0.1)
+            except OSError:
+                return  # Non-console stdin — exit thread
             except Exception:
                 import time
-                time.sleep(0.5)  # back off on errors
+                time.sleep(0.5)
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
