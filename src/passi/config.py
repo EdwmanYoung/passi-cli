@@ -36,12 +36,15 @@ SETTINGS_TEMPLATE = """\
 
 default_provider: anthropic
 
+# ── LLM Providers ──────────────────────────────────────────────────────
+
 anthropic:
   api_key: ""
   base_url: https://api.deepseek.com/anthropic
   model: deepseek-v4-pro
   max_tokens: 8192
   temperature: 0.0
+  thinking_budget_tokens: 0
 
 openai:
   api_key: ""
@@ -50,8 +53,33 @@ openai:
   max_tokens: 4096
   temperature: 0.0
 
+# ── Code Execution ─────────────────────────────────────────────────────
+# R is auto-detected in this order:
+#   1) Explicit r_home below
+#   2) PASSI_R_HOME / R_HOME environment variables
+#   3) Project-local ./R/ directory (recommended for rpy2)
+#   4) System R under Program Files\\R (newest version first)
+
 execution:
+  # Python interpreter (default: "python")
+  python_path: python
+
+  # R home directory — path to R installation root (e.g., C:/Program Files/R/R-4.4.0)
+  # Leave empty for auto-detection.
+  r_home: ""
+
+  # R library path for installed packages (default: ./R-lib in project root)
+  # Leave empty to auto-create and use project-local R-lib.
+  r_lib_path: ""
+
+  # Use rpy2 bridge for Python-R integration (recommended)
+  rpy2_enabled: true
+
+  # Execution timeout in seconds
   timeout_seconds: 300
+
+  # Max captured output size (bytes)
+  max_output_bytes: 10485760
 """
 
 

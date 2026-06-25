@@ -76,6 +76,9 @@ class RunPythonTool(CallableTool[RunPythonParams]):
     )
     params_model = RunPythonParams
 
+    # Configurable at registration time — set from ExecutionConfig
+    python_path: str = "python"
+
     def __init__(
         self,
         runs_base: Path | None = None,
@@ -108,7 +111,7 @@ class RunPythonTool(CallableTool[RunPythonParams]):
         try:
             start = time.perf_counter()
             result = subprocess.run(
-                ["python", str(script_path.resolve())],
+                [self.python_path, str(script_path.resolve())],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

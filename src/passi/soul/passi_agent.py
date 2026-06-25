@@ -534,6 +534,7 @@ class PassiAgent(Soul):
         from passi.tools.exec_tools import RunPythonTool, RunRTool
 
         run_python = RunPythonTool(runs_base=runs_base, session_id_provider=_get_session_id)
+        run_python.python_path = exec_cfg.python_path or "python"
         registry.register(run_python, category="exec")
 
         run_r = RunRTool(runs_base=runs_base, session_id_provider=_get_session_id)
