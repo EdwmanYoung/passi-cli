@@ -197,8 +197,9 @@ class PassiConfig(BaseSettings):
     data_dir: Path = Path("./data")
     output_dir: Path = Path("./output")
 
-    # System prompt
-    system_prompt_template: str = ""
+    # Prompt templating
+    prompt_template_dir: str = ""  # "" = use built-in defaults from passi/prompts/
+    enable_data_format_check: bool = True  # append data format check instructions to system prompt
 
     @field_validator("data_dir", "output_dir", mode="before")
     @classmethod

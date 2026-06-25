@@ -71,6 +71,19 @@ async def run_print_mode(
 
 def _print_text(response: Any) -> None:
     """Print response as plain text."""
+    # Check for pending question first
+    pq = response.metadata.get("pending_question") if response.metadata else None
+    if pq:
+        _safe_print("\n[Agent needs your input]")
+        _safe_print(f"Q: {pq['question']}")
+        if pq.get("context"):
+            _safe_print(f"Context: {pq['context']}")
+        if pq.get("options"):
+            _safe_print("Options:")
+            for i, opt in enumerate(pq["options"], 1):
+                _safe_print(f"  {i}. {opt}")
+        return
+
     content = response.content
     if isinstance(content, list):
         for block in content:

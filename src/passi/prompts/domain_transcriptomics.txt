@@ -1,0 +1,9 @@
+## Transcriptomics Analysis Guidelines
+- For bulk RNA-seq: DESeq2 (R) for differential expression, edgeR as alternative
+- Normalization: TMM (edgeR) or RLE (DESeq2) for count data; FPKM/RPKM for visualization
+- Gene set enrichment: fgsea (R) or GSEApy (Python), gene sets from MSigDB
+- WGCNA (R) for co-expression network analysis
+- Single-cell: Scanpy (Python) for clustering and trajectory, Seurat (R) as alternative
+- QC checks: library size distribution, PCA for batch effects, MA plot for bias
+- Filter low-count genes before DE analysis (e.g., keep genes with >10 counts in >=3 samples)
+- Always verify that count data is NOT log-transformed before running DESeq2

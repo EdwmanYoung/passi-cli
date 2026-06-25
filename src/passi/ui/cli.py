@@ -150,6 +150,12 @@ class PassiCLI:
 
             progress.stop()
 
+        # Check for pending question (ask_user tool was triggered)
+        pq = response.metadata.get("pending_question") if response.metadata else None
+        if pq:
+            self._render_ask_user(pq)
+            return
+
         # Render response
         if isinstance(response.content, list):
             for block in response.content:
@@ -230,6 +236,30 @@ class PassiCLI:
         self.console.print("\n[dim]Session ended.[/dim]")
 
     # ── Output helpers ──
+
+    def _render_ask_user(self, pq: dict) -> None:
+        """Render a pending question from the ask_user tool."""
+        question_text = pq.get("question", "")
+        context = pq.get("context", "")
+        options = pq.get("options") or []
+
+        # Build the panel body
+        body = question_text
+        if context:
+            body += f"\n\n[dim]{context}[/dim]"
+
+        self.console.print(Panel(
+            Markdown(body),
+            style=SYSTEM_STYLE,
+            title="Agent needs your input",
+            title_align="left",
+        ))
+
+        if options:
+            self.console.print("\n[bold]Options:[/bold]")
+            for i, opt in enumerate(options, 1):
+                self.console.print(f"  {i}. {opt}")
+            self.console.print()
 
     def _print_user(self, text: str) -> None:
         self.console.print(Panel(text, style=USER_STYLE, title="You", title_align="left"))

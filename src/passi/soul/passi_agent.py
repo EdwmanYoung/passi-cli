@@ -19,39 +19,12 @@ from passi.infra.provenance import ProvenanceTracker
 from passi.infra.task_tracker import Task, TaskTracker
 from passi.infra.runtime import Runtime
 from passi.infra.session import SessionManager
+from passi.prompts import PromptManager
 from passi.soul.protocol import AgentMessage, AgentStreamEvent, Soul
 from passi.tools.registry import ToolRegistry
 from passi.wire.protocol import EventType, Wire, WireEvent
 
 logger = logging.getLogger(__name__)
-
-# System prompt for the bioinformatics agent
-SYSTEM_PROMPT = """You are PassiAgent, an expert bioinformatics analysis assistant specializing in multi-omics data analysis.
-
-## Capabilities
-You can help with:
-- **Single-omics analysis**: differential expression (RNA-seq), GWAS, peak calling (ChIP/ATAC-seq), methylation analysis, proteomics quantification, metabolomics profiling
-- **Multi-omics integration**: MOFA, DIABLO, SNF, WGCNA, ML-based integration
-- **Clinical statistics**: survival analysis (KM, Cox), competing risks, ROC, meta-analysis
-- **Biostatistics**: hypothesis testing, correlation, regression, power analysis
-- **Data processing**: normalization, batch correction, missing value imputation, QC
-
-## Guidelines
-1. When the user provides data files, first use `parse_omics_data` to detect format and inspect contents
-2. Before running analysis, confirm the analysis plan with the user (method, parameters, expected output)
-3. Execute analysis step by step — check intermediate results before proceeding
-4. Use R (via `run_r`) for Bioconductor methods (DESeq2, limma, WGCNA, mixOmics, MOFA2)
-5. Use Python (via `run_python`) for visualization, ML, and general computation
-6. Always provide interpretation of results in biological/clinical context
-7. When encountering errors, diagnose and suggest fixes rather than silently failing
-8. Export significant results and figures for the user to review
-
-## Important
-- Always verify input data format before analysis
-- Handle missing values and outliers explicitly
-- Apply multiple testing correction for high-throughput analyses
-- Document all analysis steps for reproducibility
-"""
 
 
 class PassiAgent(Soul):
@@ -72,6 +45,7 @@ class PassiAgent(Soul):
         self._provenance: ProvenanceTracker | None = None
         self._plan_manager: PlanManager | None = None
         self._task_tracker: TaskTracker | None = None
+        self._prompt_manager: PromptManager | None = None
         self._initialized: bool = False
 
     async def initialize(self) -> None:
@@ -112,8 +86,17 @@ class PassiAgent(Soul):
             logger.warning("R environment not available: %s", r_status.get("error"))
             logger.info("R scripts will use Rscript subprocess fallback")
 
-        # Set up context
-        self.runtime.context.set_system_prompt(SYSTEM_PROMPT)
+        # Set up context with templated system prompt
+        template_dir = self.config.prompt_template_dir or None
+        self._prompt_manager = PromptManager(template_dir)
+        session = self.runtime.session.active_session
+        domain = session.domain if session else "multi-omics"
+        system_prompt = self._prompt_manager.build_system_prompt(
+            domain=domain,
+            plan_enabled=True,
+            data_check_enabled=self.config.enable_data_format_check,
+        )
+        self.runtime.context.set_system_prompt(system_prompt)
         self.runtime.context.set_tools(
             self._tool_registry.get_schemas(format="anthropic")
         )
@@ -152,6 +135,7 @@ class PassiAgent(Soul):
         # ReAct loop
         max_iterations = 20
         final_content: list[dict] = []
+        pending_question: dict[str, Any] | None = None
 
         for iteration in range(max_iterations):
             context = self.runtime.context.get_full_context()
@@ -264,9 +248,22 @@ class PassiAgent(Soul):
                     "content": result_text,
                 })
 
+                # Check if this tool wants to pause for user input
+                if result.get("__ask_user__"):
+                    pending_question = {
+                        "question": result["question"],
+                        "context": result.get("context", ""),
+                        "options": result.get("options"),
+                    }
+                    break  # break from tool execution loop
+
             # Batch all tool results from this iteration into one message
             if tool_results:
                 self.runtime.context.add_message("tool_results", tool_results)
+
+            # Break ReAct loop if ask_user was triggered
+            if pending_question is not None:
+                break
 
             # Check for context compaction
             if self.runtime.context.needs_compaction():
@@ -274,9 +271,13 @@ class PassiAgent(Soul):
 
         # Build final message
         content = final_content if len(final_content) > 1 else final_content[0] if final_content else {"type": "text", "text": ""}
+        metadata: dict[str, Any] = {}
+        if pending_question is not None:
+            metadata["pending_question"] = pending_question
         agent_msg = AgentMessage(
             role="agent",
             content=content if isinstance(content, list) else [content],
+            metadata=metadata,
         )
 
         # Emit agent message
@@ -367,6 +368,7 @@ class PassiAgent(Soul):
         registry = ToolRegistry()
 
         # System / plan tools
+        from passi.tools.ask_user_tool import AskUserTool
         from passi.tools.system_tools import (
             CreatePlanTool,
             GetPlanTool,
@@ -376,6 +378,7 @@ class PassiAgent(Soul):
         registry.register(CreatePlanTool(self._plan_manager), category="system")
         registry.register(UpdatePlanStatusTool(self._plan_manager), category="system")
         registry.register(GetPlanTool(self._plan_manager), category="system")
+        registry.register(AskUserTool(), category="system")
 
         # I/O tools
         from passi.tools.io_tools import (

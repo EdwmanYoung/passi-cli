@@ -1,6 +1,7 @@
-"""System prompt templates for PassiAgent.
+"""Deprecated: System prompt templates for PassiAgent.
 
-Domain-specific prompts are loaded based on the analysis context.
+Prompts have been moved to src/passi/prompts/*.txt via PromptManager.
+This file is kept for reference only — it is no longer imported or used.
 """
 
 from __future__ import annotations

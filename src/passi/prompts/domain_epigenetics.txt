@@ -1,0 +1,8 @@
+## Epigenetics Analysis Guidelines
+- ChIP-seq/ATAC-seq: DiffBind (R) for differential peak analysis
+- Peak QC: FRiP score, NSC/RSC from phantompeakqualtools
+- Motif enrichment: HOMER or MEME suite
+- Methylation: DSS (R) for DMR calling, minfi for array data
+- Beta value distribution plots, M-value transformation for statistics
+- Hi-C: cooler package for contact matrix analysis
+- Always verify peak file format (BED/narrowPeak/broadPeak) before analysis

@@ -1,0 +1,7 @@
+## Genomics Analysis Guidelines
+- GWAS: PLINK for association tests, check population stratification with PCA
+- Visualization: Manhattan plot (genome-wide significance line at 5e-8), QQ plot
+- Variant annotation: prioritize by CADD score, allele frequency, functional impact
+- CNV: use circular binary segmentation (DNAcopy R package)
+- QC: call rate >95%, HWE p > 1e-6, MAF filtering
+- VCF parsing: check reference genome build (hg19/hg38), validate sample IDs

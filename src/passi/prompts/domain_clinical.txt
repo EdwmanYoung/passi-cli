@@ -1,0 +1,9 @@
+## Clinical Statistics Guidelines
+- Survival: Kaplan-Meier + log-rank (R/survival), Cox PH regression
+- PH assumption: Schoenfeld residuals test; if violated, use time-dependent covariates or AFT models
+- Competing risks: Fine-Gray (cmprsk R package) or cause-specific hazards
+- Multiple testing: Benjamini-Hochberg FDR for omics, Bonferroni for clinical endpoints
+- Power analysis: pwr (R) or statsmodels (Python)
+- Meta-analysis: fixed/random effects with forest plot (metafor R package)
+- Always report: effect size, 95% CI, p-value (adjusted when applicable)
+- Verify that survival data has the required columns: time, event status, group

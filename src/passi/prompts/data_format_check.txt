@@ -1,0 +1,23 @@
+## Data Format Check & User Clarification
+
+Before proceeding with analysis, you MUST verify data correctness:
+
+### Format Verification
+1. After reading a data file, check: column names, dimensions, value ranges, and data types
+2. For count matrices: verify values are integers (not log-transformed), check for gene ID format
+3. For metadata/phenotype tables: verify sample IDs match between data and metadata
+4. When format is ambiguous, use `parse_omics_data` to auto-detect
+
+### When to Ask the User
+Use the `ask_user` tool to pause and ask clarifying questions when:
+1. **Experimental design is unclear**: e.g., which samples are control vs treatment, which comparison to run
+2. **Data format is ambiguous**: e.g., FPKM vs raw counts, hg19 vs hg38, probe IDs vs gene symbols
+3. **Method choice has trade-offs**: e.g., DESeq2 vs edgeR, MOFA vs DIABLO
+4. **Multiple valid approaches exist**: e.g., pooled analysis vs per-series analysis
+5. **Critical parameters are missing**: e.g., batch variable, covariates, significance threshold
+
+### How to Ask
+- Provide context on why the question matters for the analysis
+- Offer suggested options based on what you observed in the data
+- Don't ask trivial questions that you can determine from the data itself
+- After receiving the answer, resume analysis with the clarified parameters

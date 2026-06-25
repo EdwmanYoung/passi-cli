@@ -425,3 +425,125 @@ class TestPassiAgentWireEvents:
         await agent.chat("Hello wire")
         # Wire should have recorded events
         assert agent.wire is not None
+
+
+class TestPassiAgentAskUser:
+    """ask_user tool integration — ReAct loop pause and metadata propagation."""
+
+    @pytest.mark.asyncio
+    async def test_ask_user_sets_pending_question_in_metadata(self, tmp_path: Path):
+        """When LLM calls ask_user, AgentMessage.metadata gets pending_question."""
+        from passi.tools.ask_user_tool import AskUserTool
+
+        llm = FakeLLMClient("I need to ask you something.")
+        llm.set_tool_calls([{
+            "id": "ask_001",
+            "name": "ask_user",
+            "input": {
+                "question": "Which comparison group?",
+                "context": "Multiple groups found.",
+                "options": ["SARS-CoV-2 vs Mock", "IAV vs Mock"],
+            },
+        }])
+
+        runtime = _make_runtime(tmp_path)
+        agent = PassiAgent(runtime)
+        registry = ToolRegistry()
+        registry.register(ReadFileTool(), "io")
+        registry.register(AskUserTool(), "system")
+        agent._llm_client = llm
+        agent._tool_registry = registry
+        agent._provenance = ProvenanceTracker(runtime.config.output_dir)
+        agent._initialized = True
+        runtime.session.create_session(domain="test")
+        runtime.context.set_system_prompt("You are a test agent.")
+        runtime.context.set_tools(registry.get_schemas(format="anthropic"))
+
+        result = await agent.chat("Help me analyze this data")
+        assert result.metadata.get("pending_question") is not None
+        pq = result.metadata["pending_question"]
+        assert pq["question"] == "Which comparison group?"
+        assert pq["context"] == "Multiple groups found."
+        assert pq["options"] == ["SARS-CoV-2 vs Mock", "IAV vs Mock"]
+
+    @pytest.mark.asyncio
+    async def test_ask_user_breaks_react_loop(self, tmp_path: Path):
+        """Ask user should stop the ReAct loop immediately, not continue iterating."""
+        from passi.tools.ask_user_tool import AskUserTool
+
+        llm = FakeLLMClientWithToolSequence()
+        llm.set_sequence(
+            tool_sequences=[
+                [{"id": "ask_1", "name": "ask_user", "input": {"question": "Confirm?"}}],
+                [{"id": "t2", "name": "read_file", "input": {"path": str(tmp_path / "x.txt")}}],
+            ],
+            final_response="This should not be reached.",
+        )
+
+        runtime = _make_runtime(tmp_path)
+        agent = PassiAgent(runtime)
+        registry = ToolRegistry()
+        registry.register(ReadFileTool(), "io")
+        registry.register(AskUserTool(), "system")
+        agent._llm_client = llm
+        agent._tool_registry = registry
+        agent._provenance = ProvenanceTracker(runtime.config.output_dir)
+        agent._initialized = True
+        runtime.session.create_session(domain="test")
+        runtime.context.set_system_prompt("You are a test agent.")
+        runtime.context.set_tools(registry.get_schemas(format="anthropic"))
+
+        result = await agent.chat("Analyze")
+        assert result.metadata.get("pending_question") is not None
+        # Only 1 LLM call should have been made (ask_user returned, loop broke)
+        assert llm._call_index == 1
+
+    @pytest.mark.asyncio
+    async def test_ask_user_without_options(self, tmp_path: Path):
+        """ask_user with no options should still set pending_question."""
+        from passi.tools.ask_user_tool import AskUserTool
+
+        llm = FakeLLMClient("Asking...")
+        llm.set_tool_calls([{
+            "id": "ask_1",
+            "name": "ask_user",
+            "input": {"question": "What threshold?", "context": "Need clarification."},
+        }])
+
+        runtime = _make_runtime(tmp_path)
+        agent = PassiAgent(runtime)
+        registry = ToolRegistry()
+        registry.register(ReadFileTool(), "io")
+        registry.register(AskUserTool(), "system")
+        agent._llm_client = llm
+        agent._tool_registry = registry
+        agent._provenance = ProvenanceTracker(runtime.config.output_dir)
+        agent._initialized = True
+        runtime.session.create_session(domain="test")
+        runtime.context.set_system_prompt("You are a test agent.")
+        runtime.context.set_tools(registry.get_schemas(format="anthropic"))
+
+        result = await agent.chat("Analyze")
+        pq = result.metadata.get("pending_question")
+        assert pq is not None
+        assert pq["question"] == "What threshold?"
+        assert pq["options"] is None
+
+    @pytest.mark.asyncio
+    async def test_no_ask_user_does_not_set_metadata(self, tmp_path: Path):
+        """Normal tool execution without ask_user should leave metadata empty."""
+        test_file = tmp_path / "data.txt"
+        test_file.write_text("gene1\t10")
+
+        llm = FakeLLMClient("Reading file.")
+        llm.set_tool_calls([{
+            "id": "t1",
+            "name": "read_file",
+            "input": {"path": str(test_file)},
+        }])
+
+        runtime = _make_runtime(tmp_path)
+        agent = _make_agent(runtime, llm)
+
+        result = await agent.chat("Read file")
+        assert "pending_question" not in result.metadata
