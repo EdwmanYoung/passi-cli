@@ -55,13 +55,21 @@ class CreatePlanTool(CallableTool[CreatePlanParams]):
             domain=params.domain,
             steps=params.steps,
         )
+        steps_info = [
+            {"step_id": s.step_id, "order": s.order, "description": s.description}
+            for s in plan.steps
+        ]
         return {
             "success": True,
             "plan_id": plan.plan_id,
             "title": plan.title,
             "steps_count": len(plan.steps),
             "status": plan.status.value,
-            "message": f"Plan '{plan.title}' created with {len(plan.steps)} steps. Ask the user to review before proceeding.",
+            "steps": steps_info,
+            "message": (
+                f"Plan '{plan.title}' created with {len(plan.steps)} steps. "
+                "Use update_plan_status with the exact step_id values above to mark progress."
+            ),
         }
 
 

@@ -37,6 +37,9 @@ class TestCreatePlanTool:
         assert result["success"] is True
         assert result["plan_id"].startswith("plan_")
         assert result["steps_count"] == 2
+        assert len(result["steps"]) == 2
+        assert result["steps"][0]["step_id"].startswith(result["plan_id"] + "_step_")
+        assert result["steps"][0]["description"] == "Load counts"
         assert pm.get_plan() is not None
 
     @pytest.mark.asyncio

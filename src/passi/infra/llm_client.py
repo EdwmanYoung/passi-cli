@@ -272,10 +272,6 @@ class OllamaClient(OpenAIClient):
             )
         super().__init__(config)
 
-    async def chat(self, *args, **kwargs) -> dict[str, Any]:  # noqa: ANN002
-        result = await super().chat(*args, **kwargs)
-        return result
-
     def supports_tool_use(self) -> bool:
         return True
 

@@ -17,8 +17,6 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Optional
-
 import click
 
 from passi import __version__
@@ -76,12 +74,34 @@ def chat(ctx: click.Context, domain: str) -> None:
 @click.argument("query")
 @click.option("--format", "-f", "output_format", type=click.Choice(["text", "json", "markdown"]), default="text", help="Output format")
 @click.option("--domain", "-d", default="multi-omics", help="Analysis domain")
+@click.option("--afk", is_flag=True, help="AFK autonomous mode: auto-plan, auto-execute, never ask user")
 @click.pass_context
-def ask(ctx: click.Context, query: str, output_format: str, domain: str) -> None:
+def ask(ctx: click.Context, query: str, output_format: str, domain: str, afk: bool) -> None:
     """Send a single query and print the response (non-interactive)."""
     from passi.ui.print_mode import run_print_mode_sync
 
     config: PassiConfig = ctx.obj["config"]
+    if afk:
+        config = PassiConfig(**{**config.model_dump(), "afk_mode": True})
+    exit_code = run_print_mode_sync(query, config, output_format, domain)
+    sys.exit(exit_code)
+
+
+# ═══════════════════════════════════════════════════════════════
+# afk — AFK autonomous analysis
+# ═══════════════════════════════════════════════════════════════
+
+@main.command()
+@click.argument("query")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json", "markdown"]), default="text", help="Output format")
+@click.option("--domain", "-d", default="multi-omics", help="Analysis domain")
+@click.pass_context
+def afk(ctx: click.Context, query: str, output_format: str, domain: str) -> None:
+    """Run analysis in AFK autonomous mode (auto-plan, auto-execute, no user prompts)."""
+    from passi.ui.print_mode import run_print_mode_sync
+
+    config: PassiConfig = ctx.obj["config"]
+    config = PassiConfig(**{**config.model_dump(), "afk_mode": True})
     exit_code = run_print_mode_sync(query, config, output_format, domain)
     sys.exit(exit_code)
 

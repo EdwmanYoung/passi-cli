@@ -294,3 +294,21 @@ class TestSessionConfig:
         monkeypatch.setenv("PASSI_SESSION__SESSIONS_DIR", "/tmp/passi_sessions")
         cfg = PassiConfig()
         assert cfg.session.sessions_dir == Path("/tmp/passi_sessions")
+
+
+class TestPassiConfigAFKMode:
+    """AFK autonomous mode configuration tests."""
+
+    def test_afk_mode_default_false(self):
+        config = PassiConfig()
+        assert config.afk_mode is False
+
+    def test_afk_mode_from_env(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PASSI_AFK_MODE", "true")
+        config = PassiConfig()
+        assert config.afk_mode is True
+
+    def test_afk_mode_false_from_env(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PASSI_AFK_MODE", "false")
+        config = PassiConfig()
+        assert config.afk_mode is False

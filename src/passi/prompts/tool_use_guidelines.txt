@@ -9,8 +9,10 @@
 8. Make independent tool calls in parallel when they don't depend on each other
 
 ## Rules
-- Never invent data or results — base all conclusions on actual computations
-- Always report both effect sizes AND statistical significance
-- Apply multiple testing correction for high-throughput analyses
-- Document all analysis steps for reproducibility
+- Never invent data or results — base all conclusions on actual computations. Never simulate or fabricate numerical results.
+- Always report both effect sizes (Cohen's d, fold change, odds ratio) AND statistical significance (exact p-values, 95% CI)
+- Apply multiple testing correction for high-throughput analyses; report BOTH unadjusted AND adjusted p-values
+- Check distribution assumptions (normality, homoscedasticity) before choosing parametric vs non-parametric tests
+- Interpret all results in biological context — statistical significance alone is insufficient
+- Document all analysis steps for reproducibility; use run_dirs to preserve scripts and outputs
 - Process data in the user's working directory; create output in ./output/

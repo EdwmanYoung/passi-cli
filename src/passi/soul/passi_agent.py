@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator
 from passi.config import PassiConfig
 from passi.infra.context import ContextManager
 from passi.infra.llm_client import LLMClient
-from passi.infra.plan import PlanManager
+from passi.infra.plan import PlanManager, StepStatus
 from passi.infra.provenance import ProvenanceTracker
 from passi.infra.task_tracker import Task, TaskTracker
 from passi.infra.runtime import Runtime
@@ -48,6 +48,7 @@ class PassiAgent(Soul):
         self._task_tracker: TaskTracker | None = None
         self._prompt_manager: PromptManager | None = None
         self._initialized: bool = False
+        self._afk_mode: bool = False
 
     async def initialize(self) -> None:
         """Initialize the agent, connecting all services."""
@@ -92,10 +93,12 @@ class PassiAgent(Soul):
         self._prompt_manager = PromptManager(template_dir)
         session = self.runtime.session.active_session
         domain = session.domain if session else "multi-omics"
+        self._afk_mode = getattr(self.config, "afk_mode", False)
         system_prompt = self._prompt_manager.build_system_prompt(
             domain=domain,
             plan_enabled=True,
             data_check_enabled=self.config.enable_data_format_check,
+            afk_mode=self._afk_mode,
         )
         self.runtime.context.set_system_prompt(system_prompt)
         self.runtime.context.set_tools(
@@ -267,12 +270,33 @@ class PassiAgent(Soul):
 
                 # Check if this tool wants to pause for user input
                 if result.get("__ask_user__"):
-                    pending_question = {
-                        "question": result["question"],
-                        "context": result.get("context", ""),
-                        "options": result.get("options"),
-                    }
-                    break  # break from tool execution loop
+                    if self._afk_mode:
+                        logger.info(
+                            "AFK mode: agent called ask_user. Question: %s",
+                            str(result.get("question", ""))[:200],
+                        )
+                        if tool_results:
+                            tool_results[-1]["content"] = json.dumps(
+                                {
+                                    "success": True,
+                                    "message": (
+                                        "AFK autonomous mode active. Your ask_user call has been intercepted. "
+                                        "Please make your best-guess decision based on observed data patterns "
+                                        "and bioinformatics best practices. Proceed with the analysis immediately. "
+                                        "Do NOT call ask_user again."
+                                    ),
+                                    "auto_decision": True,
+                                },
+                                ensure_ascii=False,
+                                default=str,
+                            )
+                    else:
+                        pending_question = {
+                            "question": result["question"],
+                            "context": result.get("context", ""),
+                            "options": result.get("options"),
+                        }
+                        break  # break from tool execution loop
 
             # Batch all tool results from this iteration into one message
             if tool_results:
@@ -491,11 +515,6 @@ class PassiAgent(Soul):
         session_id: str,
     ) -> None:
         """Emit plan-related wire events based on tool execution results."""
-        plan_events = {
-            "create_plan": (EventType.PLAN_CREATED, result.get("plan_id")),
-            "update_plan_status": (None, None),  # Handled below based on status
-        }
-
         if tool_name == "create_plan" and result.get("success"):
             self.wire.emit(
                 EventType.PLAN_CREATED,
@@ -530,3 +549,34 @@ class PassiAgent(Soul):
                     },
                     session_id,
                 )
+
+        # Auto-sync code execution results with plan step status
+        if tool_name in ("run_python", "run_r") and self._plan_manager is not None:
+            current = self._plan_manager.get_current_step()
+            if current is not None:
+                if result.get("success"):
+                    self._plan_manager.update_step_status(
+                        step_id=current.step_id,
+                        status=StepStatus.DONE,
+                        output_summary=str(result.get("stdout", ""))[:200] or str(result.get("run_dir", "")),
+                    )
+                    self.wire.emit(
+                        EventType.PLAN_STEP_COMPLETE,
+                        {"step_id": current.step_id},
+                        session_id,
+                    )
+                else:
+                    error_msg = result.get("error") or result.get("stderr", "")
+                    self._plan_manager.update_step_status(
+                        step_id=current.step_id,
+                        status=StepStatus.FAILED,
+                        error_message=str(error_msg)[:500],
+                    )
+                    self.wire.emit(
+                        EventType.PLAN_STEP_FAILED,
+                        {
+                            "step_id": current.step_id,
+                            "error": str(error_msg)[:200],
+                        },
+                        session_id,
+                    )

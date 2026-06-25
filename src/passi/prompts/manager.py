@@ -21,7 +21,7 @@ _DOMAIN_TEMPLATE_MAP: dict[str, str] = {
     "clinical": "domain_clinical",
     "multi-omics": "domain_transcriptomics",  # fallback to most common
     "proteomics": "domain_transcriptomics",
-    "metabolomics": "domain_transcriptomics",
+    "metabolomics": "domain_metabolomics",
 }
 
 
@@ -41,6 +41,7 @@ class PromptManager:
     _CORE_TEMPLATES: ClassVar[list[str]] = [
         "base_system",
         "tool_use_guidelines",
+        "bioinfo_principles",
     ]
 
     # Templates included based on flags
@@ -65,6 +66,7 @@ class PromptManager:
         domain: str = "multi-omics",
         plan_enabled: bool = True,
         data_check_enabled: bool = True,
+        afk_mode: bool = False,
         **extra_vars: str,
     ) -> str:
         """Compose the full system prompt from templates.
@@ -88,15 +90,21 @@ class PromptManager:
                 parts.append(tmpl.safe_substitute(variables))
 
         # Optional templates (conditional)
-        flags: dict[str, bool] = {
-            "plan_enabled": plan_enabled,
-            "data_check_enabled": data_check_enabled,
-        }
-        for flag_name, template_name in self._OPTIONAL_TEMPLATES.items():
-            if flags.get(flag_name):
-                tmpl = self._cache.get(template_name)
-                if tmpl is not None:
-                    parts.append(tmpl.safe_substitute(variables))
+        if afk_mode:
+            # AFK mode: use afk_mode template instead of plan_mode + data_format_check
+            tmpl = self._cache.get("afk_mode")
+            if tmpl is not None:
+                parts.append(tmpl.safe_substitute(variables))
+        else:
+            flags: dict[str, bool] = {
+                "plan_enabled": plan_enabled,
+                "data_check_enabled": data_check_enabled,
+            }
+            for flag_name, template_name in self._OPTIONAL_TEMPLATES.items():
+                if flags.get(flag_name):
+                    tmpl = self._cache.get(template_name)
+                    if tmpl is not None:
+                        parts.append(tmpl.safe_substitute(variables))
 
         # Domain template
         domain_template_name = _DOMAIN_TEMPLATE_MAP.get(domain, "domain_transcriptomics")

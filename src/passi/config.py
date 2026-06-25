@@ -109,8 +109,6 @@ def _find_r_home(explicit: str | Path = "") -> str:
       3) Project-local ./R/ directory
       4) System R under Program Files\\R (newest first)
     """
-    import os
-
     # 1) Explicit — trust user if provided, even if not a valid R home
     if explicit:
         path = Path(explicit)
@@ -200,6 +198,7 @@ class PassiConfig(BaseSettings):
     # Prompt templating
     prompt_template_dir: str = ""  # "" = use built-in defaults from passi/prompts/
     enable_data_format_check: bool = True  # append data format check instructions to system prompt
+    afk_mode: bool = False  # AFK autonomous mode: auto-plan, auto-execute, never ask user
 
     @field_validator("data_dir", "output_dir", mode="before")
     @classmethod

@@ -83,11 +83,14 @@ class RunPythonTool(CallableTool[RunPythonParams]):
     ) -> None:
         self.runs_base = runs_base or Path("output") / "runs"
         self._session_id_provider = session_id_provider or (lambda: "default")
+        self._project_root = Path.cwd().resolve()
 
     async def execute(self, params: RunPythonParams, **kwargs: Any) -> dict[str, Any]:
         # Determine run directory
         if params.output_dir:
             run_dir = Path(params.output_dir)
+            if not run_dir.is_absolute():
+                run_dir = self._project_root / run_dir
         else:
             sid = self._session_id_provider()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S%f")
@@ -99,6 +102,9 @@ class RunPythonTool(CallableTool[RunPythonParams]):
         script_path = run_dir / "script.py"
         script_path.write_text(params.code, encoding="utf-8")
 
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+
         try:
             start = time.perf_counter()
             result = subprocess.run(
@@ -106,7 +112,8 @@ class RunPythonTool(CallableTool[RunPythonParams]):
                 capture_output=True,
                 text=True,
                 timeout=params.timeout,
-                cwd=str(run_dir),
+                cwd=str(self._project_root),
+                env=env,
             )
             elapsed_ms = (time.perf_counter() - start) * 1000
 
@@ -186,11 +193,14 @@ class RunRTool(CallableTool[RunRParams]):
     ) -> None:
         self.runs_base = runs_base or Path("output") / "runs"
         self._session_id_provider = session_id_provider or (lambda: "default")
+        self._project_root = Path.cwd().resolve()
 
     async def execute(self, params: RunRParams, **kwargs: Any) -> dict[str, Any]:
         # Determine run directory (shared by both execution paths)
         if params.output_dir:
             run_dir = Path(params.output_dir)
+            if not run_dir.is_absolute():
+                run_dir = self._project_root / run_dir
         else:
             sid = self._session_id_provider()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S%f")
@@ -294,7 +304,7 @@ class RunRTool(CallableTool[RunRParams]):
                 capture_output=True,
                 text=True,
                 timeout=params.timeout,
-                cwd=str(run_dir),
+                cwd=str(self._project_root),
             )
             elapsed_ms = (time.perf_counter() - start) * 1000
 

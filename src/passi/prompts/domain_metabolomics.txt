@@ -1,0 +1,46 @@
+## Metabolomics Analysis Guidelines
+
+### Data Preprocessing
+- Handle missing values carefully: use kNN imputation (k=5 or 10) for LC-MS data where missingness is informative (below detection limit). Use half-minimum replacement only for truly zero values, not for missing peaks.
+- Check for internal standard (IS) variation across samples. If IS CV > 25%, flag potential technical variability.
+- Remove features with >50% missing values within each group. Document how many features were retained.
+
+### Normalization
+- For NMR data: normalize to total spectral area or probabilistic quotient normalization (PQN).
+- For LC-MS data: TIC (Total Ion Count) normalization, MSTUS, or PQN depending on data characteristics.
+- For targeted metabolomics (concentration data): check if values are already normalized by the data provider.
+
+### Scaling & Transformation
+- Concentration data is typically right-skewed: apply log10 or cube-root transformation before parametric analysis.
+- For multivariate analysis (PCA, PLS-DA, OPLS-DA): use auto-scaling (mean-center, unit variance) or Pareto-scaling.
+- For heatmaps and visualization: use z-score normalization within each metabolite for color contrast.
+
+### Univariate Analysis
+- Two-group comparison: Welch's t-test (if normal) or Mann-Whitney U test (if non-normal). Always check distribution first.
+- Multi-group comparison: one-way ANOVA (if normal, equal variance) or Kruskal-Wallis (if not). Follow significant omnibus tests with post-hoc pairwise comparisons.
+- Paired/matched designs: use paired t-test or Wilcoxon signed-rank test. Do NOT treat paired data as independent.
+- Visualization: volcano plot (log2 fold change vs -log10 adjusted p-value) with significance thresholds (FDR < 0.05, |log2FC| > 1).
+- For time-series metabolomics: consider repeated measures ANOVA or linear mixed models with subject as random effect.
+
+### Multivariate Analysis
+- PCA: unsupervised overview, check QC sample clustering, detect outliers (samples outside 95% Hotelling's T2 ellipse).
+- PLS-DA or OPLS-DA: supervised classification with permutation testing (>=1000 permutations) for model validation. Report Q2 and R2Y metrics.
+- Report VIP scores >= 1.0 to identify the most discriminative metabolites for PLS-DA models.
+- Check for overfitting: if R2Y is high but Q2 is low or negative, the model is overfitted and results are unreliable.
+
+### Pathway & Enrichment Analysis
+- Use MetaboAnalystR or KEGG pathway enrichment for metabolic pathway mapping.
+- Consider both over-representation analysis (ORA, Fisher's exact test) and topology-based methods.
+- Map metabolite identifiers to HMDB, KEGG, or PubChem CID before pathway analysis.
+- Interpret enriched pathways in the context of the biological system and disease.
+
+### Quality Control
+- Check QC (pooled) samples: tight clustering in PCA, low CV for IS, consistent retention times.
+- Detect batch effects: PCA colored by run order or batch, ratio-based correction or ComBat if needed.
+- Flag samples with unusual total ion count or missingness patterns.
+- For NMR data: check for phase and baseline correction quality, consistent referencing (TSP/DSS peak at 0 ppm).
+
+### Reporting
+- Report concentrations in original units where possible (uM, mM) for biological interpretability.
+- For each metabolite found significant: report chemical shift (NMR) or m/z + retention time (LC-MS), identification confidence level (Level 1-4 per MSI), and fold change with direction.
+- Combine with other omics layers when available: transcriptomics + metabolomics for pathway-level validation.

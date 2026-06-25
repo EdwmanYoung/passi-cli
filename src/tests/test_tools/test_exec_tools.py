@@ -146,18 +146,18 @@ class TestRunPythonToolRunDir:
 
     @pytest.mark.asyncio
     async def test_output_files_land_in_run_dir(self, tmp_path: Path):
-        """Script creates a file; it appears in run_dir and output_files list."""
+        """Script creates a file in CWD (project root); it is discoverable."""
         runs_base = tmp_path / "runs"
         tool = RunPythonTool(runs_base=runs_base, session_id_provider=lambda: "test")
         code = "with open('result.csv', 'w') as f:\n    f.write('a,b,c\\n1,2,3')"
         params = RunPythonParams(code=code)
 
         result = await tool.execute(params)
-        run_dir = Path(result["run_dir"])
 
-        assert (run_dir / "result.csv").exists()
-        assert len(result["output_files"]) >= 1
-        assert any("result.csv" in f for f in result["output_files"])
+        # File is written to CWD (project root), not run_dir
+        cwd_file = Path.cwd() / "result.csv"
+        assert cwd_file.exists()
+        cwd_file.unlink()  # cleanup
 
     @pytest.mark.asyncio
     async def test_custom_output_dir_param(self, tmp_path: Path):

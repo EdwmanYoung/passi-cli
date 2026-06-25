@@ -7,7 +7,7 @@ Inspired by Kimi CLI's Soul (Protocol) pattern.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, Protocol
+from typing import AsyncIterator
 
 from pydantic import BaseModel, Field
 
@@ -78,9 +78,3 @@ class Soul(ABC):
         """Reset the conversation context."""
         ...
 
-
-class SoulFactory(Protocol):
-    """Protocol for creating Soul instances."""
-
-    async def create(self) -> Soul:
-        ...

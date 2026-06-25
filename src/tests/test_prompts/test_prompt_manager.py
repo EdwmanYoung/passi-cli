@@ -18,9 +18,12 @@ class TestPromptManager:
         templates = pm.list_templates()
         assert "base_system" in templates
         assert "tool_use_guidelines" in templates
+        assert "bioinfo_principles" in templates
         assert "plan_mode" in templates
         assert "data_format_check" in templates
+        assert "afk_mode" in templates
         assert "domain_transcriptomics" in templates
+        assert "domain_metabolomics" in templates
 
     def test_build_system_prompt_includes_core_templates(self):
         pm = PromptManager()
@@ -28,6 +31,26 @@ class TestPromptManager:
         assert "PassiAgent" in prompt
         assert "Capabilities" in prompt
         assert "How You Work" in prompt
+        assert "Bioinformatics Expert Principles" in prompt
+
+    def test_bioinfo_principles_in_core_system_prompt(self):
+        pm = PromptManager()
+        prompt = pm.build_system_prompt(domain="genomics")
+        assert "Statistical Rigor" in prompt
+        assert "Data Integrity" in prompt
+        assert "Tool-First Analysis" in prompt
+        assert "Biological Interpretation" in prompt
+
+    def test_domain_metabolomics_template(self):
+        pm = PromptManager()
+        prompt = pm.build_system_prompt(domain="metabolomics")
+        assert "Metabolomics Analysis Guidelines" in prompt
+        assert "metabolomics" in prompt.lower()
+
+    def test_domain_metabolomics_not_in_transcriptomics(self):
+        pm = PromptManager()
+        prompt = pm.build_system_prompt(domain="transcriptomics")
+        assert "Metabolomics Analysis Guidelines" not in prompt
 
     def test_build_system_prompt_includes_plan_mode_when_enabled(self):
         pm = PromptManager()
@@ -98,6 +121,20 @@ class TestPromptManager:
     def test_get_raw_returns_none_for_missing(self):
         pm = PromptManager()
         assert pm.get_raw("nonexistent") is None
+
+    def test_afk_mode_replaces_plan_and_data_check(self):
+        pm = PromptManager()
+        prompt = pm.build_system_prompt(afk_mode=True)
+        assert "AFK Autonomous Mode" in prompt
+        assert "Never Call ask_user" in prompt
+        assert "Plan Mode" not in prompt
+        assert "Data Format Check" not in prompt
+
+    def test_afk_mode_with_plan_disabled_still_uses_afk_template(self):
+        pm = PromptManager()
+        prompt = pm.build_system_prompt(afk_mode=True, plan_enabled=False)
+        assert "AFK Autonomous Mode" in prompt
+        assert "Plan Mode" not in prompt
 
     def test_list_templates_returns_sorted_names(self):
         pm = PromptManager()
