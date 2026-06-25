@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from passi.config import PassiConfig
@@ -206,9 +207,25 @@ class PassiAgent(Soul):
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
                 # Record provenance
+                input_files: list[str] = []
+                output_files: list[str] = []
+                if tool_name in ("run_python", "run_r"):
+                    input_files = tool_input.get("input_files", [])
+                    run_dir = result.get("run_dir", "")
+                    if run_dir:
+                        rd = Path(run_dir)
+                        if rd.exists():
+                            known = {"script.py", "script.R", "stdout.log", "stderr.log", "run_metadata.json"}
+                            output_files = sorted(
+                                str(p) for p in rd.iterdir()
+                                if p.is_file() and p.name not in known
+                            )
+
                 record = self._provenance.record_step(
                     tool_name=tool_name,
                     tool_params=tool_input,
+                    input_files=input_files,
+                    output_files=output_files,
                     exit_code=0 if result.get("success") else 1,
                     error_message=result.get("error", ""),
                     duration_ms=elapsed_ms,
@@ -394,16 +411,22 @@ class PassiAgent(Soul):
         registry.register(ExportResultsTool(), category="io")
 
         exec_cfg = self.config.execution
+        runs_base = self.config.output_dir / "runs"
+
+        def _get_session_id() -> str:
+            s = self.runtime.session.active_session
+            return s.session_id if s else "default"
 
         # Execution tools
         from passi.tools.exec_tools import RunPythonTool, RunRTool
 
-        run_r = RunRTool()
+        run_python = RunPythonTool(runs_base=runs_base, session_id_provider=_get_session_id)
+        registry.register(run_python, category="exec")
+
+        run_r = RunRTool(runs_base=runs_base, session_id_provider=_get_session_id)
         run_r.r_home = exec_cfg.r_home or ""
         run_r.r_lib_path = exec_cfg.r_lib_path or ""
         run_r.r_path = exec_cfg.rscript_binary
-
-        registry.register(RunPythonTool(), category="exec")
         registry.register(run_r, category="exec")
 
         # QC tools

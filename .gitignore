@@ -16,4 +16,6 @@ R-lib/
 R/
 test_dataset/
 wire.jsonl
+e2e_results/
+audit_session_*/
 .claude/
