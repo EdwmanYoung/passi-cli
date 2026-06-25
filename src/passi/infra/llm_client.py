@@ -127,7 +127,30 @@ class AnthropicClient(LLMClient):
                 # System messages are handled separately in Anthropic API
                 continue
 
-            if isinstance(content, str):
+            if role == "tool":
+                # Anthropic: tool results go as user messages with tool_result blocks
+                # Find the last assistant's tool_use id for correct pairing
+                tool_use_id = _find_last_tool_use_id(converted)
+                converted.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": content if isinstance(content, str) else str(content),
+                    }],
+                })
+            elif role == "tool_results":
+                # Batched tool results: expand into one user message with multiple tool_result blocks
+                blocks = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tr["tool_use_id"],
+                        "content": tr["content"] if isinstance(tr["content"], str) else str(tr["content"]),
+                    }
+                    for tr in content
+                ]
+                converted.append({"role": "user", "content": blocks})
+            elif isinstance(content, str):
                 converted.append({"role": role, "content": content})
             elif isinstance(content, list):
                 # Content blocks already in Anthropic format
@@ -255,6 +278,16 @@ class OllamaClient(OpenAIClient):
 
     def supports_tool_use(self) -> bool:
         return True
+
+
+def _find_last_tool_use_id(messages: list[dict[str, Any]]) -> str:
+    """Find the tool_use id from the last assistant message's content blocks."""
+    for msg in reversed(messages):
+        if msg["role"] == "assistant" and isinstance(msg.get("content"), list):
+            for block in reversed(msg["content"]):
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    return block.get("id", "unknown")
+    return "unknown"
 
 
 def create_llm_client(config: PassiConfig, provider: str | None = None) -> LLMClient:

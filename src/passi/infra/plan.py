@@ -95,8 +95,8 @@ class PlanManager:
                     step_id=f"{plan_id}_step_{i:02d}",
                     order=i,
                     description=step_data.get("description", ""),
-                    tool_name=step_data.get("tool_name", ""),
-                    expected_params=step_data.get("expected_params", {}),
+                    tool_name=step_data.get("tool_name") or "",
+                    expected_params=step_data.get("expected_params") or {},
                 ))
 
         self._plan = AnalysisPlan(

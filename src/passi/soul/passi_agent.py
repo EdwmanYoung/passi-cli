@@ -80,10 +80,9 @@ class PassiAgent(Soul):
             return
 
         self._llm_client = self.runtime.get_llm_client()
-        self._tool_registry = self._create_tool_registry()
         self._provenance = ProvenanceTracker(self.config.output_dir)
 
-        # ── Plan manager ──
+        # ── Plan manager & Task tracker (must be before _create_tool_registry) ──
         session = self.runtime.session.active_session
         session_dir = (
             self.config.session.sessions_dir / session.session_id
@@ -95,6 +94,8 @@ class PassiAgent(Soul):
 
         self._task_tracker = TaskTracker(session_dir)
         self._task_tracker.load_tasks()  # Load existing tasks if present
+
+        self._tool_registry = self._create_tool_registry()
 
         # ── Initialize R environment ──
         exec_cfg = self.config.execution
@@ -170,9 +171,27 @@ class PassiAgent(Soul):
             # Handle tool calls
             tool_calls = response.get("tool_calls") or []
             if not tool_calls:
-                # No more tools — agent is done
+                # No more tools — agent is done; store final assistant text
+                if agent_text:
+                    self.runtime.context.add_message("assistant", agent_text)
                 break
 
+            # Store assistant message with tool_use blocks first (Anthropic format requirement)
+            assistant_blocks: list[dict[str, Any]] = []
+            for b in response["content"]:
+                if b.get("type") == "text" and b.get("text"):
+                    assistant_blocks.append({"type": "text", "text": b["text"]})
+                elif b.get("type") == "tool_use":
+                    assistant_blocks.append({
+                        "type": "tool_use",
+                        "id": b.get("id", ""),
+                        "name": b.get("name", ""),
+                        "input": b.get("input", {}),
+                    })
+            self.runtime.context.add_message("assistant", assistant_blocks)
+
+            # Execute tools and collect results, then batch into one message
+            tool_results: list[dict[str, Any]] = []
             for tc in tool_calls:
                 tool_name = tc["name"]
                 tool_input = tc.get("input", {})
@@ -232,7 +251,7 @@ class PassiAgent(Soul):
                 # Emit plan-related events
                 self._emit_plan_event(tool_name, tool_input, result, sid)
 
-                # Add tool result to context
+                # Collect tool result — batched into one message later
                 result_text = json.dumps(result, ensure_ascii=False, default=str)
                 final_content.append({
                     "type": "tool_use",
@@ -240,7 +259,14 @@ class PassiAgent(Soul):
                     "name": tool_name,
                     "input": tool_input,
                 })
-                self.runtime.context.add_message("tool", result_text)
+                tool_results.append({
+                    "tool_use_id": tc.get("id", ""),
+                    "content": result_text,
+                })
+
+            # Batch all tool results from this iteration into one message
+            if tool_results:
+                self.runtime.context.add_message("tool_results", tool_results)
 
             # Check for context compaction
             if self.runtime.context.needs_compaction():
@@ -260,7 +286,6 @@ class PassiAgent(Soul):
             sid,
         )
 
-        self.runtime.context.add_message("assistant", agent_msg.content)
         self.runtime.session.touch()
         return agent_msg
 

@@ -32,6 +32,7 @@ class Task(BaseModel):
     step_id: str = ""  # Optional: links to PlanStep
     tool_name: str
     params: dict[str, Any] = Field(default_factory=dict)
+    success: bool = False
     status: str = TaskStatus.PENDING
     started_at: str = ""
     completed_at: str = ""
@@ -87,6 +88,7 @@ class TaskTracker:
             logger.warning("Task not found: %s", task_id)
             return None
 
+        task.success = success
         task.status = TaskStatus.DONE if success else TaskStatus.FAILED
         task.completed_at = datetime.now(timezone.utc).isoformat()
         task.result_summary = result_summary
