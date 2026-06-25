@@ -191,7 +191,7 @@ class PassiCLI:
 
     async def _get_input(self) -> str:
         """Get user input with mode-aware prompt styling."""
-        loop = asyncio.get_running_event_loop()
+        loop = asyncio.get_running_loop()
         mode = self.agent.mode if self.agent else "chat"
         mode_emoji = {"chat": "💬", "plan": "📋", "afk": "🤖"}.get(mode, "🧬")
         prompt_text = Text(f"{mode_emoji} [{mode}] > ", style=USER_STYLE)
@@ -520,7 +520,7 @@ class PassiCLI:
         if hm is None:
             return
 
-        loop = asyncio.get_running_event_loop()
+        loop = asyncio.get_running_loop()
 
         # Step 1: Name
         name = await loop.run_in_executor(
