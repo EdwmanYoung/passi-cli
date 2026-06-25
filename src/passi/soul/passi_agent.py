@@ -1,0 +1,359 @@
+"""PassiAgent — the main bioinformatics analysis agent.
+
+Implements the Soul protocol with ReAct loop, tool orchestration, and
+domain-specific sub-agent delegation.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from typing import Any, AsyncIterator
+
+from passi.config import PassiConfig
+from passi.infra.context import ContextManager
+from passi.infra.llm_client import LLMClient
+from passi.infra.provenance import ProvenanceTracker
+from passi.infra.runtime import Runtime
+from passi.infra.session import SessionManager
+from passi.soul.protocol import AgentMessage, AgentStreamEvent, Soul
+from passi.tools.registry import ToolRegistry
+from passi.wire.protocol import EventType, Wire, WireEvent
+
+logger = logging.getLogger(__name__)
+
+# System prompt for the bioinformatics agent
+SYSTEM_PROMPT = """You are PassiAgent, an expert bioinformatics analysis assistant specializing in multi-omics data analysis.
+
+## Capabilities
+You can help with:
+- **Single-omics analysis**: differential expression (RNA-seq), GWAS, peak calling (ChIP/ATAC-seq), methylation analysis, proteomics quantification, metabolomics profiling
+- **Multi-omics integration**: MOFA, DIABLO, SNF, WGCNA, ML-based integration
+- **Clinical statistics**: survival analysis (KM, Cox), competing risks, ROC, meta-analysis
+- **Biostatistics**: hypothesis testing, correlation, regression, power analysis
+- **Data processing**: normalization, batch correction, missing value imputation, QC
+
+## Guidelines
+1. When the user provides data files, first use `parse_omics_data` to detect format and inspect contents
+2. Before running analysis, confirm the analysis plan with the user (method, parameters, expected output)
+3. Execute analysis step by step — check intermediate results before proceeding
+4. Use R (via `run_r`) for Bioconductor methods (DESeq2, limma, WGCNA, mixOmics, MOFA2)
+5. Use Python (via `run_python`) for visualization, ML, and general computation
+6. Always provide interpretation of results in biological/clinical context
+7. When encountering errors, diagnose and suggest fixes rather than silently failing
+8. Export significant results and figures for the user to review
+
+## Important
+- Always verify input data format before analysis
+- Handle missing values and outliers explicitly
+- Apply multiple testing correction for high-throughput analyses
+- Document all analysis steps for reproducibility
+"""
+
+
+class PassiAgent(Soul):
+    """Main bioinformatics analysis agent.
+
+    Orchestrates tool execution through a ReAct loop with LLM reasoning.
+    Delegates complex domain-specific analysis to sub-agents.
+    """
+
+    def __init__(self, runtime: Runtime) -> None:
+        self.runtime = runtime
+        self.config: PassiConfig = runtime.config
+        self.wire: Wire = Wire()
+
+        # Lazy initialization
+        self._llm_client: LLMClient | None = None
+        self._tool_registry: ToolRegistry | None = None
+        self._provenance: ProvenanceTracker | None = None
+        self._initialized: bool = False
+
+    async def initialize(self) -> None:
+        """Initialize the agent, connecting all services."""
+        if self._initialized:
+            return
+
+        self._llm_client = self.runtime.get_llm_client()
+        self._tool_registry = self._create_tool_registry()
+        self._provenance = ProvenanceTracker(self.config.output_dir)
+
+        # ── Initialize R environment ──
+        exec_cfg = self.config.execution
+        from passi.executors.r_executor import init_rpy2
+
+        r_status = init_rpy2(exec_cfg.r_home, exec_cfg.r_lib_path)
+        if r_status["ready"]:
+            logger.info(
+                "R environment ready: %s | libs: %s",
+                r_status.get("r_version"),
+                r_status.get("lib_paths"),
+            )
+        else:
+            logger.warning("R environment not available: %s", r_status.get("error"))
+            logger.info("R scripts will use Rscript subprocess fallback")
+
+        # Set up context
+        self.runtime.context.set_system_prompt(SYSTEM_PROMPT)
+        self.runtime.context.set_tools(
+            self._tool_registry.get_schemas(format="anthropic")
+        )
+
+        # Emit session start
+        session = self.runtime.session.active_session
+        self.wire.emit(
+            EventType.SESSION_START,
+            session_id=session.session_id if session else "",
+        )
+
+        await self.runtime.initialize()
+        self._initialized = True
+        logger.info("PassiAgent initialized.")
+
+    async def chat(
+        self,
+        user_message: str,
+        attachments: list[str] | None = None,
+    ) -> AgentMessage:
+        """Send a message and get a complete response via ReAct loop."""
+        if not self._initialized:
+            await self.initialize()
+
+        assert self._llm_client is not None
+        assert self._tool_registry is not None
+        assert self._provenance is not None
+
+        session = self.runtime.session.active_session
+        sid = session.session_id if session else ""
+
+        # Emit user message
+        self.wire.emit(EventType.USER_MESSAGE, {"content": user_message}, sid)
+        self.runtime.context.add_message("user", user_message)
+
+        # ReAct loop
+        max_iterations = 20
+        final_content: list[dict] = []
+
+        for iteration in range(max_iterations):
+            context = self.runtime.context.get_full_context()
+            response = await self._llm_client.chat(
+                messages=context["messages"],
+                tools=context.get("tools"),
+                system=context["system"],
+            )
+
+            # Handle text response
+            text_parts = [b.get("text", "") for b in response["content"] if b.get("type") == "text"]
+            agent_text = " ".join(text_parts)
+            if agent_text:
+                final_content.append({"type": "text", "text": agent_text})
+
+            # Handle tool calls
+            tool_calls = response.get("tool_calls") or []
+            if not tool_calls:
+                # No more tools — agent is done
+                break
+
+            for tc in tool_calls:
+                tool_name = tc["name"]
+                tool_input = tc.get("input", {})
+
+                # Emit tool call
+                self.wire.emit(
+                    EventType.TOOL_CALL,
+                    {"name": tool_name, "params": tool_input},
+                    sid,
+                )
+
+                # Execute tool
+                start = time.perf_counter()
+                result = await self._tool_registry.execute(tool_name, tool_input)
+                elapsed_ms = (time.perf_counter() - start) * 1000
+
+                # Record provenance
+                self._provenance.record_step(
+                    tool_name=tool_name,
+                    tool_params=tool_input,
+                    exit_code=0 if result.get("success") else 1,
+                    error_message=result.get("error", ""),
+                    duration_ms=elapsed_ms,
+                    session_id=sid,
+                )
+
+                # Emit tool result
+                self.wire.emit(
+                    EventType.TOOL_RESULT,
+                    {"name": tool_name, "result": result},
+                    sid,
+                )
+
+                # Add tool result to context
+                result_text = json.dumps(result, ensure_ascii=False, default=str)
+                final_content.append({
+                    "type": "tool_use",
+                    "id": tc.get("id", ""),
+                    "name": tool_name,
+                    "input": tool_input,
+                })
+                self.runtime.context.add_message("tool", result_text)
+
+            # Check for context compaction
+            if self.runtime.context.needs_compaction():
+                self.runtime.context.compact()
+
+        # Build final message
+        content = final_content if len(final_content) > 1 else final_content[0] if final_content else {"type": "text", "text": ""}
+        agent_msg = AgentMessage(
+            role="agent",
+            content=content if isinstance(content, list) else [content],
+        )
+
+        # Emit agent message
+        self.wire.emit(
+            EventType.AGENT_MESSAGE,
+            {"content": agent_msg.content},
+            sid,
+        )
+
+        self.runtime.context.add_message("assistant", agent_msg.content)
+        self.runtime.session.touch()
+        return agent_msg
+
+    async def chat_stream(
+        self,
+        user_message: str,
+        attachments: list[str] | None = None,
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """Stream agent response with incremental events."""
+        if not self._initialized:
+            await self.initialize()
+
+        yield AgentStreamEvent(type="thinking", content="Analyzing request...")
+        result = await self.chat(user_message, attachments)
+
+        # Replay the result as stream events
+        if isinstance(result.content, list):
+            for block in result.content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        yield AgentStreamEvent(type="text", content=block["text"])
+                    elif block.get("type") == "tool_use":
+                        yield AgentStreamEvent(
+                            type="tool_call",
+                            content=str(block.get("input", "")),
+                            tool_name=block.get("name", ""),
+                        )
+        elif isinstance(result.content, str):
+            yield AgentStreamEvent(type="text", content=result.content)
+
+        yield AgentStreamEvent(type="done", content="")
+
+    async def execute_tool(self, tool_name: str, params: dict) -> AgentMessage:
+        """Execute a tool directly."""
+        if not self._initialized:
+            await self.initialize()
+
+        assert self._tool_registry is not None
+        result = await self._tool_registry.execute(tool_name, params)
+        return AgentMessage(
+            role="tool",
+            content=json.dumps(result, ensure_ascii=False, default=str),
+            name=tool_name,
+        )
+
+    async def reset(self) -> None:
+        """Reset conversation context."""
+        self.runtime.context.clear()
+        logger.info("Agent context reset.")
+
+    async def shutdown(self) -> None:
+        """Clean shutdown."""
+        session = self.runtime.session.active_session
+        if session:
+            self.wire.emit(EventType.SESSION_END, session_id=session.session_id)
+        await self.runtime.shutdown()
+
+    def _create_tool_registry(self) -> ToolRegistry:
+        """Create and populate the tool registry with all available tools."""
+        registry = ToolRegistry()
+
+        # I/O tools
+        from passi.tools.io_tools import (
+            ExportResultsTool,
+            ParseOmicsDataTool,
+            ReadFileTool,
+            WriteFileTool,
+        )
+
+        registry.register(ReadFileTool(), category="io")
+        registry.register(WriteFileTool(), category="io")
+        registry.register(ParseOmicsDataTool(), category="io")
+        registry.register(ExportResultsTool(), category="io")
+
+        exec_cfg = self.config.execution
+
+        # Execution tools
+        from passi.tools.exec_tools import RunPythonTool, RunRTool
+
+        run_r = RunRTool()
+        run_r.r_home = exec_cfg.r_home or ""
+        run_r.r_lib_path = exec_cfg.r_lib_path or ""
+        run_r.r_path = exec_cfg.rscript_binary
+
+        registry.register(RunPythonTool(), category="exec")
+        registry.register(run_r, category="exec")
+
+        # QC tools
+        from passi.tools.qc_tools import QcReportTool
+
+        registry.register(QcReportTool(), category="qc")
+
+        # Genomics tools
+        from passi.tools.genomics_tools import (
+            GwasAnalysisTool,
+            ManhattanPlotTool,
+            VcfStatsTool,
+        )
+
+        registry.register(VcfStatsTool(), category="genomics")
+        registry.register(GwasAnalysisTool(), category="genomics")
+        registry.register(ManhattanPlotTool(), category="genomics")
+
+        # Epigenetics tools
+        from passi.tools.epigenetics_tools import MethylationAnalysisTool, PeakQcTool
+
+        registry.register(PeakQcTool(), category="epigenetics")
+        registry.register(MethylationAnalysisTool(), category="epigenetics")
+
+        # Transcriptomics tools
+        from passi.tools.transcriptomics_tools import DifferentialAnalysisTool
+
+        de_tool = DifferentialAnalysisTool(
+            r_home=exec_cfg.r_home or "",
+            r_lib_path=exec_cfg.r_lib_path or "",
+            r_path=exec_cfg.rscript_binary,
+        )
+        registry.register(de_tool, category="transcriptomics")
+
+        # Enrichment analysis tools
+        from passi.tools.enrichment_tools import EnrichmentTool
+
+        enrich_tool = EnrichmentTool(
+            r_home=exec_cfg.r_home or "",
+            r_lib_path=exec_cfg.r_lib_path or "",
+            r_path=exec_cfg.rscript_binary,
+        )
+        registry.register(enrich_tool, category="transcriptomics")
+
+        # Clinical / biostatistics tools
+        from passi.tools.clinical_tools import SurvivalAnalysisTool
+
+        surv_tool = SurvivalAnalysisTool(
+            r_home=exec_cfg.r_home or "",
+            r_lib_path=exec_cfg.r_lib_path or "",
+            r_path=exec_cfg.rscript_binary,
+        )
+        registry.register(surv_tool, category="clinical")
+
+        return registry
