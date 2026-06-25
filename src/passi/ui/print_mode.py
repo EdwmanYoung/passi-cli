@@ -17,6 +17,15 @@ from passi.infra.runtime import Runtime
 from passi.soul.passi_agent import PassiAgent
 
 
+def _safe_print(text: str) -> None:
+    """Print text, replacing characters unsupported by the console encoding."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = sys.stdout.encoding or "utf-8"
+        print(text.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+
 async def run_print_mode(
     query: str,
     config: PassiConfig | None = None,
@@ -67,11 +76,11 @@ def _print_text(response: Any) -> None:
         for block in content:
             if isinstance(block, dict):
                 if block.get("type") == "text":
-                    print(block["text"])
+                    _safe_print(block["text"])
                 elif block.get("type") == "tool_use":
-                    print(f"\n[Tool: {block.get('name', '?')}]")
+                    _safe_print(f"\n[Tool: {block.get('name', '?')}]")
     elif isinstance(content, str):
-        print(content)
+        _safe_print(content)
 
 
 def _print_json(response: Any) -> None:
@@ -92,14 +101,13 @@ def _print_markdown(response: Any) -> None:
             if isinstance(block, dict):
                 if block.get("type") == "text":
                     text = block["text"]
-                    # Ensure proper markdown formatting
                     if text and not text.startswith(("#", ">", "-", "|")):
-                        print(text)
+                        _safe_print(text)
                     else:
-                        print(text)
-                    print()
+                        _safe_print(text)
+                    _safe_print("")
     elif isinstance(content, str):
-        print(content)
+        _safe_print(content)
 
 
 def run_print_mode_sync(

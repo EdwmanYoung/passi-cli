@@ -47,6 +47,10 @@ class QcReportTool(CallableTool[QcReportParams]):
 
         try:
             suffix = path.suffix.lower()
+            if suffix == ".gz":
+                # Strip .gz suffix: file.tsv.gz -> .tsv
+                inner_name = path.name[:-3]
+                suffix = Path(inner_name).suffix.lower()
             if suffix in (".csv",):
                 df = pd.read_csv(path)
             elif suffix in (".tsv", ".txt"):

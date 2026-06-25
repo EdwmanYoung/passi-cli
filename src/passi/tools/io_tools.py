@@ -6,12 +6,25 @@ Core tools for reading, writing, and parsing omics data files.
 from __future__ import annotations
 
 import csv
+import gzip
 import json
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from pydantic import BaseModel, Field
+
+
+def _resolve_suffix(path: Path) -> tuple[str, bool]:
+    """Resolve the effective file suffix, handling gzip compression.
+
+    Returns (suffix, is_compressed).
+    """
+    name = path.name.lower()
+    if name.endswith(".gz"):
+        inner = Path(name[:-3])  # strip .gz
+        return inner.suffix.lower(), True
+    return path.suffix.lower(), False
 
 from passi.tools.base import CallableTool
 
@@ -37,7 +50,7 @@ class ReadFileTool(CallableTool[ReadFileParams]):
         if not path.exists():
             return {"success": False, "error": f"File not found: {params.path}"}
 
-        suffix = path.suffix.lower()
+        suffix, is_gz = _resolve_suffix(path)
 
         try:
             if suffix in (".csv",):
@@ -82,8 +95,12 @@ class ReadFileTool(CallableTool[ReadFileParams]):
                     "preview": df.head(100).to_dict(orient="records"),
                 }
             else:
-                with open(path, encoding=params.encoding, errors="replace") as f:
-                    lines = [f.readline() for _ in range(params.max_lines) if (line := f.readline())]
+                if is_gz:
+                    with gzip.open(path, "rt", encoding=params.encoding, errors="replace") as f:
+                        lines = [f.readline() for _ in range(params.max_lines)]
+                else:
+                    with open(path, encoding=params.encoding, errors="replace") as f:
+                        lines = [f.readline() for _ in range(params.max_lines)]
                 return {
                     "success": True,
                     "format": "text",
@@ -162,11 +179,12 @@ class ParseOmicsDataTool(CallableTool[ParseOmicsDataParams]):
         if not path.exists():
             return {"success": False, "error": f"File not found: {params.path}"}
 
-        suffix = path.suffix.lower()
+        suffix, is_gz = _resolve_suffix(path)
         detected: dict[str, Any] = {
             "file_path": str(path),
             "file_size_mb": round(path.stat().st_size / (1024 * 1024), 2),
-            "suffix": suffix,
+            "suffix": path.suffix.lower(),
+            "is_compressed": is_gz,
         }
 
         try:
