@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from passi.tools.base import CallableTool
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════
@@ -234,7 +236,7 @@ class EnrichmentParams(BaseModel):
     output_dir: str = Field(default="./output", description="Output directory for results")
 
 
-class EnrichmentTool:
+class EnrichmentTool(CallableTool[EnrichmentParams]):
     """Gene set enrichment analysis via fgsea (preranked) or clusterProfiler (ORA).
 
     Run GSEA on a ranked gene list or over-representation analysis on

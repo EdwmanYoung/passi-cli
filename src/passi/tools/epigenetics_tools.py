@@ -13,6 +13,8 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel, Field
 
+from passi.tools.base import CallableTool
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,7 +31,7 @@ class PeakQcParams(BaseModel):
     output_dir: str = Field(default="./output", description="Output directory")
 
 
-class PeakQcTool:
+class PeakQcTool(CallableTool[PeakQcParams]):
     """Calculate QC metrics for ChIP-seq / ATAC-seq peak files.
 
     Reports: peak count, width distribution, signal value distribution,
@@ -242,7 +244,7 @@ class MethylationAnalysisParams(BaseModel):
     output_dir: str = Field(default="./output", description="Output directory")
 
 
-class MethylationAnalysisTool:
+class MethylationAnalysisTool(CallableTool[MethylationAnalysisParams]):
     """Analyze DNA methylation data from beta-value matrices or Bismark output.
 
     Reports: beta value distribution, differentially methylated CpGs,

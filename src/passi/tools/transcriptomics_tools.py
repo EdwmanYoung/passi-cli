@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from passi.tools.base import CallableTool
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════
@@ -135,7 +137,7 @@ class DifferentialAnalysisParams(BaseModel):
     output_dir: str = Field(default="./output", description="Output directory for results")
 
 
-class DifferentialAnalysisTool:
+class DifferentialAnalysisTool(CallableTool[DifferentialAnalysisParams]):
     """Differential expression analysis via DESeq2 / edgeR / limma.
 
     Accepts a count matrix + metadata table, executes the chosen R method

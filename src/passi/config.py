@@ -109,7 +109,7 @@ def _find_r_home(explicit: str | Path = "") -> str:
     """
     import os
 
-    # 1) Explicit
+    # 1) Explicit — trust user if provided, even if not a valid R home
     if explicit:
         path = Path(explicit)
         if _is_r_home(path):
@@ -118,6 +118,8 @@ def _find_r_home(explicit: str | Path = "") -> str:
         resolved = Path.cwd() / path
         if _is_r_home(resolved):
             return str(resolved.resolve())
+        # Not a valid R install, but user explicitly set it — return as-is
+        return str(path)
 
     # 2) Environment variables
     for env_var in ("PASSI_R_HOME", "R_HOME"):
@@ -220,23 +222,29 @@ def load_config(config_path: str | Path | None = None) -> PassiConfig:
 
     Environment variables take precedence over file settings.
     """
-    config = PassiConfig()
+    file_data: dict = {}
     if config_path is not None:
         path = Path(config_path)
-        if path.suffix in (".yaml", ".yml"):
+        if not path.exists():
+            pass  # Silently skip — use defaults + env vars
+        elif path.suffix in (".yaml", ".yml"):
             import yaml
 
             with open(path) as f:
                 data = yaml.safe_load(f)
             if data:
-                config = PassiConfig(**data)
+                file_data = data
         elif path.suffix == ".json":
             import json
 
             with open(path) as f:
                 data = json.load(f)
             if data:
-                config = PassiConfig(**data)
+                file_data = data
+
+    # Start with defaults, apply file data, env vars naturally take precedence
+    config = PassiConfig(**file_data) if file_data else PassiConfig()
+
     # Apply environment variable overrides
     env_override = os.environ.get("PASSI_CONFIG", "")
     if env_override:

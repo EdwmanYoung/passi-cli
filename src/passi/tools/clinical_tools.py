@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from passi.tools.base import CallableTool
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════
@@ -166,7 +168,7 @@ class SurvivalAnalysisParams(BaseModel):
     output_dir: str = Field(default="./output", description="Output directory for results")
 
 
-class SurvivalAnalysisTool:
+class SurvivalAnalysisTool(CallableTool[SurvivalAnalysisParams]):
     """Survival analysis: Kaplan-Meier, Cox PH regression, competing risks.
 
     Executes via R's survival package through rpy2 bridge or Rscript fallback.

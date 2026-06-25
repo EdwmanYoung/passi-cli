@@ -13,6 +13,8 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel, Field
 
+from passi.tools.base import CallableTool
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +30,7 @@ class VcfStatsParams(BaseModel):
     output_dir: str = Field(default="./output", description="Output directory")
 
 
-class VcfStatsTool:
+class VcfStatsTool(CallableTool[VcfStatsParams]):
     """Parse a VCF file and extract variant-level statistics.
 
     Reports: variant count, SNP/indel ratio, quality distribution,
@@ -169,7 +171,7 @@ class GwasAnalysisParams(BaseModel):
     output_dir: str = Field(default="./output", description="Output directory for GWAS results")
 
 
-class GwasAnalysisTool:
+class GwasAnalysisTool(CallableTool[GwasAnalysisParams]):
     """Run GWAS association analysis using Python (statsmodels).
 
     For VCF input, performs per-variant association testing using
@@ -403,7 +405,7 @@ class ManhattanPlotParams(BaseModel):
     title: str = Field(default="GWAS Manhattan Plot", description="Plot title")
 
 
-class ManhattanPlotTool:
+class ManhattanPlotTool(CallableTool[ManhattanPlotParams]):
     """Generate Manhattan and QQ plots from GWAS summary statistics."""
 
     name = "manhattan_plot"

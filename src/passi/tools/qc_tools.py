@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel, Field
 
+from passi.tools.base import CallableTool
+
 
 class QcReportParams(BaseModel):
     """Parameters for QC report generation."""
@@ -17,7 +19,7 @@ class QcReportParams(BaseModel):
     output_dir: str = Field(default="./output", description="Directory for QC report output")
 
 
-class QcReportTool:
+class QcReportTool(CallableTool[QcReportParams]):
     """Generate a quality control report for omics data.
 
     Detects: missing values, outliers, batch effects (via PCA),

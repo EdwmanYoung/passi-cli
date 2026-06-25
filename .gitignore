@@ -15,4 +15,5 @@ data/
 R-lib/
 R/
 test_dataset/
+wire.jsonl
 .claude/
