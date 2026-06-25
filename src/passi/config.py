@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 from pydantic import Field, field_validator
@@ -211,6 +211,52 @@ def _is_r_home(path: Path) -> bool:
     )
 
 
+def _convert_env_value(v: str) -> Any:
+    """Convert a .env string value to its likely Python type."""
+    if v.lower() in ("true", "yes"):
+        return True
+    if v.lower() in ("false", "no"):
+        return False
+    if v.isdigit():
+        return int(v)
+    try:
+        return float(v)
+    except ValueError:
+        return v
+
+
+def _env_to_nested(env_path: Path, prefix: str = "PASSI_") -> dict[str, Any]:
+    """Parse a .env file and convert PASSI_* flat keys to nested dict.
+
+    Example: PASSI_ANTHROPIC__API_KEY=sk-xxx -> {"anthropic": {"api_key": "sk-xxx"}}
+    """
+    from dotenv import dotenv_values
+
+    flat = dotenv_values(str(env_path))
+    result: dict[str, Any] = {}
+    for key, value in flat.items():
+        if value is None or not key.startswith(prefix):
+            continue
+        sub_key = key[len(prefix):].lower()
+        parts = sub_key.split("__")
+        current = result
+        for part in parts[:-1]:
+            current = current.setdefault(part, {})
+        current[parts[-1]] = _convert_env_value(str(value))
+    return result
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge two nested dicts, with override taking precedence."""
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 class SessionConfig(BaseSettings):
     """Session management configuration."""
 
@@ -220,14 +266,20 @@ class SessionConfig(BaseSettings):
     wire_file: str = "wire.jsonl"
 
 
+class HooksConfig(BaseSettings):
+    """User hook configuration — persisted to ~/.passi/hooks.yaml."""
+
+    hooks_file: Path = Path.home() / ".passi" / "hooks.yaml"
+    enabled: bool = True  # master kill switch for all hooks
+    timeout_seconds: int = 30  # per-hook execution timeout
+
+
 class PassiConfig(BaseSettings):
     """Root configuration for PassiAgent."""
 
     model_config = SettingsConfigDict(
         env_prefix="PASSI_",
         env_nested_delimiter="__",
-        env_file=".env",
-        env_file_encoding="utf-8",
         extra="allow",
     )
 
@@ -249,6 +301,9 @@ class PassiConfig(BaseSettings):
     debug: bool = False
     data_dir: Path = Path("./data")
     output_dir: Path = Path("./output")
+
+    # Hooks
+    hooks: HooksConfig = Field(default_factory=HooksConfig)
 
     # Prompt templating
     prompt_template_dir: str = ""  # "" = use built-in defaults from passi/prompts/
@@ -280,8 +335,8 @@ def load_config(config_path: str | Path | None = None) -> PassiConfig:
     Layers (lowest to highest):
       1. Code defaults
       2. ~/.passi/settings.yaml (user-global)
-      3. CLI --config YAML/JSON file
-      4. CWD .env file (via pydantic-settings env_file)
+      3. CWD .env file (project-specific)
+      4. CLI --config YAML/JSON file (explicit, overrides .env)
       5. PASSI_* environment variables
       6. PASSI_CONFIG JSON env override
     """
@@ -294,22 +349,28 @@ def load_config(config_path: str | Path | None = None) -> PassiConfig:
     if passi_settings.exists():
         data = yaml.safe_load(passi_settings.read_text(encoding="utf-8"))
         if isinstance(data, dict):
-            file_data.update(data)
+            file_data = _deep_merge(file_data, data)
 
-    # Layer 3: CLI --config YAML/JSON file
+    # Layer 3: CWD .env (project-specific, overrides user-global settings)
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        env_data = _env_to_nested(cwd_env)
+        file_data = _deep_merge(file_data, env_data)
+
+    # Layer 4: CLI --config YAML/JSON file (explicit, overrides .env)
     if config_path is not None:
         path = Path(config_path)
         if path.exists():
             if path.suffix in (".yaml", ".yml"):
                 data = yaml.safe_load(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    file_data.update(data)
+                    file_data = _deep_merge(file_data, data)
             elif path.suffix == ".json":
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    file_data.update(data)
+                    file_data = _deep_merge(file_data, data)
 
-    # Create config — CWD .env (Layer 4) and env vars (Layer 5) handled by pydantic-settings
+    # Create config — env vars (Layer 5) override all via pydantic-settings env_prefix
     config = PassiConfig(**file_data) if file_data else PassiConfig()
 
     # Layer 6: PASSI_CONFIG JSON env override (highest priority)

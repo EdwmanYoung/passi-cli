@@ -14,6 +14,7 @@ from typing import Any, AsyncIterator
 
 from passi.config import PassiConfig
 from passi.infra.context import ContextManager
+from passi.infra.hooks import HookManager
 from passi.infra.llm_client import LLMClient
 from passi.infra.plan import PlanManager, StepStatus
 from passi.infra.provenance import ProvenanceTracker
@@ -49,6 +50,9 @@ class PassiAgent(Soul):
         self._prompt_manager: PromptManager | None = None
         self._initialized: bool = False
         self._afk_mode: bool = False
+        self._mode: str = "chat"  # "chat", "plan", or "afk"
+        self._plan_first: bool = False  # plan-first mode (requires plan before execution)
+        self._hook_manager: HookManager | None = None
 
     async def initialize(self) -> None:
         """Initialize the agent, connecting all services."""
@@ -88,18 +92,25 @@ class PassiAgent(Soul):
             logger.warning("R environment not available: %s", r_status.get("error"))
             logger.info("R scripts will use Rscript subprocess fallback")
 
-        # Set up context with templated system prompt
+        # ── Hook manager ──
+        hooks_cfg = self.config.hooks
+        hooks_path = hooks_cfg.hooks_file
+        self._hook_manager = HookManager(hooks_path, wire=self.wire)
+        if hooks_cfg.enabled:
+            self.wire.subscribe(self._hook_manager)
+
+        # ── Set up context with templated system prompt ──
         template_dir = self.config.prompt_template_dir or None
         self._prompt_manager = PromptManager(template_dir)
         session = self.runtime.session.active_session
         domain = session.domain if session else "multi-omics"
         self._afk_mode = getattr(self.config, "afk_mode", False)
-        system_prompt = self._prompt_manager.build_system_prompt(
-            domain=domain,
-            plan_enabled=True,
-            data_check_enabled=self.config.enable_data_format_check,
-            afk_mode=self._afk_mode,
-        )
+
+        # Derive mode from config or explicit set_mode() call
+        if self._afk_mode:
+            self._mode = "afk"
+
+        system_prompt = self._rebuild_system_prompt(domain)
         self.runtime.context.set_system_prompt(system_prompt)
         self.runtime.context.set_tools(
             self._tool_registry.get_schemas(format="anthropic")
@@ -107,14 +118,87 @@ class PassiAgent(Soul):
 
         # Emit session start
         session = self.runtime.session.active_session
-        self.wire.emit(
-            EventType.SESSION_START,
-            session_id=session.session_id if session else "",
-        )
+        sid = session.session_id if session else ""
+        self.wire.emit(EventType.SESSION_START, session_id=sid)
+
+        # Set hook manager session context
+        if self._hook_manager is not None:
+            self._hook_manager.set_session_context(sid, domain)
 
         await self.runtime.initialize()
         self._initialized = True
-        logger.info("PassiAgent initialized.")
+        logger.info("PassiAgent initialized. Mode: %s", self._mode)
+
+    def set_mode(
+        self,
+        mode: str = "chat",
+        plan_first: bool = False,
+        skills: list[str] | None = None,
+    ) -> None:
+        """Switch agent mode and optionally activate skills.
+
+        Args:
+            mode: "chat" (interactive), "plan" (plan-first), or "afk" (autonomous)
+            plan_first: In chat/plan mode, require plan creation before execution
+            skills: List of skill names to activate (e.g., ["metabolomics", "stats"])
+        """
+        valid_modes = {"chat", "plan", "afk"}
+        if mode not in valid_modes:
+            logger.warning("Invalid mode '%s'. Choose from: %s", mode, valid_modes)
+            return
+
+        prev_mode = self._mode
+        self._mode = mode
+        self._afk_mode = (mode == "afk")
+        self._plan_first = plan_first or (mode == "plan")
+
+        # Apply skills
+        if skills and self._prompt_manager is not None:
+            self._prompt_manager.clear_skills()
+            for skill in skills:
+                self._prompt_manager.load_skill(skill)
+
+        # Rebuild system prompt if already initialized
+        if self._initialized and self._prompt_manager is not None:
+            session = self.runtime.session.active_session
+            domain = session.domain if session else "multi-omics"
+            new_prompt = self._rebuild_system_prompt(domain)
+            self.runtime.context.set_system_prompt(new_prompt)
+
+        logger.info(
+            "Agent mode switched: %s → %s (afk=%s, plan_first=%s, skills=%s)",
+            prev_mode, self._mode, self._afk_mode, self._plan_first,
+            self._prompt_manager.active_skills if self._prompt_manager else [],
+        )
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def plan_first(self) -> bool:
+        return self._plan_first
+
+    @property
+    def active_skills(self) -> list[str]:
+        if self._prompt_manager is not None:
+            return self._prompt_manager.active_skills
+        return []
+
+    def get_hook_manager(self) -> HookManager | None:
+        return self._hook_manager
+
+    def _rebuild_system_prompt(self, domain: str) -> str:
+        """Rebuild system prompt from current mode/skills state."""
+        if self._prompt_manager is None:
+            return ""
+        return self._prompt_manager.build_system_prompt(
+            domain=domain,
+            plan_enabled=True,
+            data_check_enabled=self.config.enable_data_format_check,
+            afk_mode=self._afk_mode,
+            plan_first=self._plan_first,
+        )
 
     async def chat(
         self,
@@ -251,6 +335,11 @@ class PassiAgent(Soul):
                     {"name": tool_name, "result": result},
                     sid,
                 )
+
+                # Notify hook manager on tool errors
+                if not result.get("success") and self._hook_manager is not None:
+                    error_msg = result.get("error", "") or result.get("stderr", "")
+                    self._hook_manager.notify_error(tool_name, str(error_msg)[:500])
 
                 # Emit plan-related events
                 self._emit_plan_event(tool_name, tool_input, result, sid)

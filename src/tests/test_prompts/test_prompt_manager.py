@@ -141,3 +141,119 @@ class TestPromptManager:
         names = pm.list_templates()
         assert names == sorted(names)
         assert len(names) >= 4
+
+
+class TestSkillSystem:
+    """Skill loading, stacking, and clearing tests."""
+
+    def test_available_skills_includes_all_expected(self):
+        skills = PromptManager.available_skills()
+        assert "metabolomics" in skills
+        assert "pathway" in skills
+        assert "stats" in skills
+        assert "qc" in skills
+        assert "multi_omics" in skills
+
+    def test_load_skill_adds_to_active(self):
+        pm = PromptManager()
+        assert pm.load_skill("metabolomics") is True
+        assert "metabolomics" in pm.active_skills
+
+    def test_load_skill_unknown_returns_false(self):
+        pm = PromptManager()
+        assert pm.load_skill("nonexistent_skill") is False
+        assert pm.active_skills == []
+
+    def test_load_skill_duplicate_no_error(self):
+        pm = PromptManager()
+        pm.load_skill("metabolomics")
+        assert pm.load_skill("metabolomics") is True  # idempotent
+        assert pm.active_skills == ["metabolomics"]
+
+    def test_unload_skill(self):
+        pm = PromptManager()
+        pm.load_skill("metabolomics")
+        pm.load_skill("stats")
+        assert pm.unload_skill("metabolomics") is True
+        assert pm.active_skills == ["stats"]
+        assert pm.unload_skill("nonexistent") is False
+
+    def test_clear_skills(self):
+        pm = PromptManager()
+        pm.load_skill("metabolomics")
+        pm.load_skill("stats")
+        pm.load_skill("qc")
+        assert len(pm.active_skills) == 3
+        pm.clear_skills()
+        assert pm.active_skills == []
+
+    def test_skill_included_in_system_prompt(self):
+        pm = PromptManager()
+        pm.load_skill("metabolomics")
+        prompt = pm.build_system_prompt(domain="transcriptomics")
+        assert "Active Skill: metabolomics" in prompt
+        assert "Metabolomics Skill" in prompt
+        assert "NMR" in prompt  # metabolomics skill mentions NMR
+
+    def test_skill_included_in_prompt_after_mode_switch(self):
+        """Skills should be included even when plan_first is set."""
+        pm = PromptManager()
+        pm.load_skill("stats")
+        prompt = pm.build_system_prompt(domain="genomics", plan_first=True)
+        assert "Active Skill: stats" in prompt
+        assert "Statistical Rigor Skill" in prompt
+
+    def test_skill_not_in_prompt_when_not_loaded(self):
+        pm = PromptManager()
+        prompt = pm.build_system_prompt()
+        assert "Active Skill:" not in prompt
+
+    def test_multiple_skills_stacked(self):
+        pm = PromptManager()
+        pm.load_skill("metabolomics")
+        pm.load_skill("stats")
+        prompt = pm.build_system_prompt()
+        assert "Active Skill: metabolomics" in prompt
+        assert "Active Skill: stats" in prompt
+        # Metabolomics comes before stats in prompt
+        idx1 = prompt.index("Active Skill: metabolomics")
+        idx2 = prompt.index("Active Skill: stats")
+        assert idx1 < idx2
+
+    def test_plan_first_template_included(self):
+        pm = PromptManager()
+        prompt = pm.build_system_prompt(plan_first=True)
+        assert "Plan-First Mode Directive" in prompt
+        assert "create_plan" in prompt
+        assert "Step 1: Understand the Request" in prompt
+
+    def test_plan_first_skipped_in_afk_mode(self):
+        """plan_first should be skipped when afk_mode is active."""
+        pm = PromptManager()
+        prompt = pm.build_system_prompt(afk_mode=True, plan_first=True)
+        assert "Plan-First Mode Directive" not in prompt
+        assert "AFK Autonomous Mode" in prompt
+
+    def test_plan_first_not_included_by_default(self):
+        pm = PromptManager()
+        prompt = pm.build_system_prompt()
+        assert "Plan-First Mode Directive" not in prompt
+
+    def test_custom_template_dir_includes_skills(self):
+        """Skills should load from skills/ subdirectory in custom template dir."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpl_dir = Path(tmpdir)
+            # Core templates
+            (tmpl_dir / "base_system.txt").write_text("Base: $domain", encoding="utf-8")
+            (tmpl_dir / "tool_use_guidelines.txt").write_text("Tools.", encoding="utf-8")
+            # Skills directory
+            skills_dir = tmpl_dir / "skills"
+            skills_dir.mkdir()
+            (skills_dir / "metabolomics.txt").write_text("Custom Metabolomics Skill Content", encoding="utf-8")
+
+            pm = PromptManager(tmpl_dir)
+            assert pm.load_skill("metabolomics") is True
+            prompt = pm.build_system_prompt(domain="test")
+            assert "Active Skill: metabolomics" in prompt
+            assert "Custom Metabolomics Skill Content" in prompt

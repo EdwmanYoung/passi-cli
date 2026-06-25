@@ -57,13 +57,27 @@ def main(ctx: click.Context, config_path: str | None, provider: str | None, debu
 
 @main.command()
 @click.option("--domain", "-d", default="multi-omics", help="Analysis domain")
+@click.option("--mode", "-m", "start_mode", type=click.Choice(["chat", "plan", "afk"]), default=None, help="Agent mode on startup")
+@click.option("--skills", "-s", default=None, help="Skills to activate on startup (comma-separated)")
 @click.pass_context
-def chat(ctx: click.Context, domain: str) -> None:
+def chat(ctx: click.Context, domain: str, start_mode: str | None, skills: str | None) -> None:
     """Start interactive chat mode (Rich TUI)."""
     from passi.ui.cli import PassiCLI
 
     config: PassiConfig = ctx.obj["config"]
+
+    # Apply CLI options to config before creating CLI
+    if start_mode == "afk":
+        config = PassiConfig(**{**config.model_dump(), "afk_mode": True})
+
     cli = PassiCLI(config)
+
+    # Apply mode and skills after CLI/agent initialization
+    if start_mode or skills:
+        # We need to wait for agent initialization, so we pass them as prefs
+        cli._start_mode = start_mode
+        cli._start_skills = [s.strip() for s in skills.split(",")] if skills else None
+
     try:
         asyncio.run(cli.start())
     except KeyboardInterrupt:

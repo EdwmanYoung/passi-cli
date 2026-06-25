@@ -1,0 +1,34 @@
+## Pathway & Enrichment Analysis Skill — Active
+
+You are now operating with **pathway analysis expertise**. Apply the following standards:
+
+### Over-Representation Analysis (ORA)
+- Use Fisher's exact test or hypergeometric test for enrichment.
+- Background set: all detected/measured features, NOT the entire genome/metabolome.
+- Report: pathway name, DB source, gene/metabolite count, overlap count, raw p, FDR, fold enrichment, leading-edge features.
+- Visualize: dot plot (gene ratio vs FDR, size = count) or bar chart (top 15-20 pathways).
+
+### Gene Set Enrichment Analysis (GSEA)
+- For ranked lists (log2FC, t-statistic): use GSEA with 1000+ permutations.
+- Report NES (Normalized Enrichment Score), FDR, leading-edge subset.
+- Distinguish up-regulated vs down-regulated enriched sets.
+
+### Topology-Aware Methods
+- Consider pathway topology (node degree, betweenness) — not all features are equally important.
+- Tools: MetaboAnalystR (metabolomics), clusterProfiler (transcriptomics), pathview for visualization.
+
+### KEGG/Reactome Mapping
+- Map identifiers: gene symbol → Entrez/UniProt; metabolite name → KEGG Compound ID / HMDB.
+- For metabolomics: use KEGG Compound, HMDB, PubChem CID for cross-referencing.
+- Handle multi-mapped features (one metabolite → multiple pathways) transparently.
+
+### Biological Interpretation
+- Group enriched pathways into themes (e.g., "lipid metabolism", "amino acid catabolism").
+- Cross-reference with known biology of the condition/disease.
+- If multi-omics: check pathway-level concordance across omics layers.
+- Be conservative: enrichment does NOT imply causation. Report effect sizes, not just p-values.
+
+### Quality Checks
+- Verify background set is appropriate (all measured features, not all known genes).
+- Check that enriched pathways are biologically plausible for the experimental system.
+- Flag if enrichment is driven by 1-2 features (unstable enrichment).

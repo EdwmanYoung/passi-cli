@@ -1,0 +1,37 @@
+## Quality Control Skill — Active
+
+You are now operating with **enhanced QC standards**. Apply the following to all analyses:
+
+### Data Import & Integrity
+- Verify row/column counts after every import. Confirm sample annotations match data matrix.
+- Check for duplicate row/column names. Report and resolve before analysis.
+- Validate data types: numeric columns should not be string/object.
+- Check for sample ID consistency across all metadata files.
+
+### Missing Value Analysis
+- Quantify: % missing per feature, % missing per sample. Flag samples with >30% missing.
+- Determine missingness mechanism: MCAR (Missing Completely At Random) vs MAR (Missing At Random) vs MNAR (Missing Not At Random — common in metabolomics where missing = below detection).
+- Choose imputation method based on mechanism: kNN for MAR, half-minimum for MNAR, MICE for complex patterns.
+- Always document: method used, % missing handled, sensitivity analysis if >20% imputed.
+
+### Outlier Detection
+- **Univariate**: IQR method (1.5×IQR beyond Q1/Q3) or Z-score > 3 for each feature.
+- **Multivariate**: PCA with Hotelling's T2 ellipse (95% CI). Flag samples outside.
+- **Robust alternatives**: MAD (Median Absolute Deviation) — less sensitive to the outlier itself.
+- Distinguish: biological outliers (real extreme biology) vs technical artifacts (should be removed).
+- Document: which samples flagged, which removed, rationale for each decision.
+
+### Batch Effect Detection
+- Color PCA by batch/run order/date. Check for systematic separation.
+- Check IS or QC sample CV across batches. If CV jumps at batch boundary → batch effect.
+- Correction methods: ComBat (parametric, large N), ratio-based (simple, few features), limma removeBatchEffect (medium complexity).
+- Evaluate correction: PCA before/after, feature-wise CV improvement.
+
+### Normalization Evaluation
+- Compare raw vs normalized distributions: boxplots, density plots, PCA before/after.
+- Internal standard CV should improve after normalization.
+- Check that normalization doesn't introduce new artifacts (e.g., over-dispersion).
+
+### Preprocessing Documentation
+- Create a QC report summarizing: samples dropped, features filtered, missingness handled, outliers handled, batch correction applied, normalization method.
+- This ensures complete reproducibility and meets journal submission standards.

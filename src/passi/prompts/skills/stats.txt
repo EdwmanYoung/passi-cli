@@ -1,0 +1,34 @@
+## Statistical Rigor Skill — Active
+
+You are now operating with **enhanced statistical rigor**. Apply the following standards to ALL analyses:
+
+### Pre-Analysis Diagnostics
+- Check distribution assumption BEFORE choosing test: Shapiro-Wilk for normality, Levene/Bartlett for variance homogeneity.
+- Report effect sizes alongside p-values: Cohen's d (two-group), eta-squared/omega-squared (multi-group), Cliff's delta (non-parametric).
+- For correlations: Spearman rho (non-parametric, preferred) or Pearson r (parametric). Always report r value with CI.
+
+### Multiple Testing Correction (MTC)
+- Default: Benjamini-Hochberg FDR (q < 0.05).
+- For exploratory/hypothesis-generating analyses: FDR < 0.10 acceptable but MUST state this.
+- For confirmatory: Bonferroni (family-wise error rate) if independence assumed.
+- Never treat raw p-values as significant without correction when testing multiple features.
+
+### Power & Sample Size
+- Report achieved power for key tests (post-hoc) when possible.
+- If N < 5 per group: warn that non-parametric tests have zero power at alpha=0.05.
+- Bootstrap (1000+ resamples) for unstable estimates or small samples.
+
+### Robust Methods
+- When normality fails AND transformation doesn't help: use rank-based methods (Mann-Whitney, Kruskal-Wallis, Spearman).
+- For outliers: use robust regression (Huber, Tukey's bisquare) or trimmed means (20%).
+- Report both parametric AND non-parametric results when assumptions are borderline.
+
+### Confidence Intervals
+- Always report 95% CI for key estimates (mean difference, fold change, odds ratio, hazard ratio).
+- For fold changes: report as "X-fold (95% CI: lower–upper)" not just point estimate.
+- For survival: report median survival with CI, hazard ratio with CI.
+
+### Reporting Standards
+- Explicitly state: test used, test statistic value, degrees of freedom (if applicable), raw p-value, adjusted p-value, effect size, CI.
+- Example: "Kruskal-Wallis H(3) = 12.34, p = 0.006, FDR = 0.024, eta²[H] = 0.32"
+- Distinguish statistical significance from biological relevance. A small p with tiny effect may be meaningless.

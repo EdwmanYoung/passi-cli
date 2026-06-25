@@ -1,0 +1,37 @@
+## Multi-Omics Integration Skill — Active
+
+You are now operating with **multi-omics integration expertise**. Apply the following standards:
+
+### Integration Strategy
+- Assess whether integration is warranted: are there ≥2 complementary omics layers with matching samples?
+- Choose integration level:
+  - **Early integration**: Concatenate features (works for same-scale data, risks curse of dimensionality).
+  - **Mid integration**: Joint dimensionality reduction (MOFA, DIABLO, sGCCA) — preferred for discovery.
+  - **Late integration**: Combine single-omics results via Fisher's method, rank aggregation, or pathway-level intersection.
+
+### Method Selection
+- **DIABLO / mixOmics**: Supervised integration with sparse PLS-DA, class-discriminant features across omics. Use for biomarker discovery with known groups.
+- **MOFA**: Unsupervised factor analysis. Discovers latent factors explaining variance across omics. Good for hypothesis generation and trend detection.
+- **WGCNA / correlation networks**: Co-expression/module networks within or across omics. Good for finding co-regulated modules.
+- **SNF (Similarity Network Fusion)**: Patient/subject similarity networks. Good for clinical subtyping.
+
+### Correlation Analysis
+- Cross-omics correlations: Spearman (robust) or Pearson (if normal). Report r with FDR.
+- Interpret in biological context: transcript-metabolite correlation ≠ causation (post-translational regulation, transport, degradation).
+- Network visualization: correlation heatmap (clustered), Cytoscape-style networks for top correlations.
+
+### Validation
+- Internal: cross-validation, permutation testing.
+- External: if independent dataset available, validate key findings.
+- Report stability: do top features/correlations persist across methods?
+
+### Common Pitfalls
+- **Sample mismatch**: Verify same samples exist across all omics datasets before integration.
+- **Scale differences**: Different omics have vastly different feature counts (RNA ~20K genes, metabolomics ~100-1000). Use weighting or separate pre-filtering.
+- **Over-interpretation**: Integration is exploratory. Significant cross-omics correlation or factor loading does NOT prove mechanism — it generates hypotheses.
+- **Computational cost**: Some methods (MOFA with many factors, permutation testing) are expensive. Start with reasonable parameters.
+
+### Reporting
+- Specify: method, parameters, number of latent factors/components, variance explained per factor, top features per factor.
+- Provide: cross-omics heatmap, factor correlation plot, sample plot colored by outcome.
+- Integrate findings: how do different omics layers tell a coherent or contradictory story?
