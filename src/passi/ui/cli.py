@@ -454,8 +454,6 @@ class PassiCLI:
         Returns the selected option text, _SENTINEL_CUSTOM_INPUT for custom input,
         or empty string if cancelled.
         """
-        from prompt_toolkit.buffer import Buffer
-
         display_options = list(options)
         display_options.append("Custom input...")
 
@@ -515,8 +513,8 @@ class PassiCLI:
                 style=_PROMPT_STYLE,
                 message=_message,
                 bottom_toolbar=_bottom_toolbar,
-                input=Buffer(read_only=True),
             )
+            session.default_buffer.read_only = True
             result: str = await session.prompt_async()
             return result
         except KeyboardInterrupt:
