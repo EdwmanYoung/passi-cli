@@ -125,6 +125,8 @@ execution:
   #   Windows: C:/Program Files/R/R-4.4.0
   #   Linux:   /usr/lib/R
   #   macOS:   /Library/Frameworks/R.framework/Resources
+  # R home directory — path to the R installation root folder.
+  # Leave empty if R is not needed. Only used when rpy2_enabled is true.
   # Auto-detected on first run — set manually only if detection fails.
   r_home: "$r_home_detected"
 
@@ -134,9 +136,10 @@ execution:
   # Set to a custom path if you share an R library across projects.
   r_lib_path: ""
 
-  # Use rpy2 bridge for Python↔R integration (recommended).
-  # When disabled, all R code runs via Rscript subprocess.
-  rpy2_enabled: true
+  # Use rpy2 bridge for Python-R integration (opt-in).
+  # Requires a working R installation and rpy2 package.
+  # When disabled, R tools fall back to Rscript subprocess.
+  rpy2_enabled: false
 
   # Maximum time (seconds) a single code execution can run.
   # Increase for large datasets or complex models.
@@ -226,7 +229,7 @@ class ExecutionConfig(BaseSettings):
     r_path: str = "Rscript"
     r_home: str = ""  # R home — auto-detected if empty
     r_lib_path: str = ""  # custom R library — auto-set to ./R-lib if empty
-    rpy2_enabled: bool = True
+    rpy2_enabled: bool = False
     timeout_seconds: int = 300
     max_output_bytes: int = 10 * 1024 * 1024  # 10 MB
     conda_env: Optional[str] = None

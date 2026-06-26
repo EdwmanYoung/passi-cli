@@ -103,20 +103,23 @@ class PassiAgent(Soul):
 
         self._tool_registry = self._create_tool_registry()
 
-        # ── Initialize R environment ──
+        # ── Initialize R environment (opt-in via rpy2_enabled) ──
         exec_cfg = self.config.execution
-        from passi.executors.r_executor import init_rpy2
+        if exec_cfg.rpy2_enabled:
+            from passi.executors.r_executor import init_rpy2
 
-        r_status = init_rpy2(exec_cfg.r_home, exec_cfg.r_lib_path)
-        if r_status["ready"]:
-            logger.info(
-                "R environment ready: %s | libs: %s",
-                r_status.get("r_version"),
-                r_status.get("lib_paths"),
-            )
+            r_status = init_rpy2(exec_cfg.r_home, exec_cfg.r_lib_path)
+            if r_status["ready"]:
+                logger.info(
+                    "R environment ready: %s | libs: %s",
+                    r_status.get("r_version"),
+                    r_status.get("lib_paths"),
+                )
+            else:
+                logger.warning("R environment not available: %s", r_status.get("error"))
+                logger.info("R scripts will use Rscript subprocess fallback")
         else:
-            logger.warning("R environment not available: %s", r_status.get("error"))
-            logger.info("R scripts will use Rscript subprocess fallback")
+            logger.info("rpy2 disabled — R tools will use Rscript subprocess if R is on PATH")
 
         # ── Hook manager ──
         hooks_cfg = self.config.hooks
