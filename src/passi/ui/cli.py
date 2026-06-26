@@ -696,12 +696,24 @@ class PassiCLI:
         """Wait for ESC key press. Cross-platform via prompt_toolkit raw input.
 
         Returns when ESC is pressed or the task is cancelled.
+
+        Drains stale input events before listening — the PromptSession that
+        submitted the user's message may leave buffered key events (especially
+        on Windows/mintty where Enter can produce residual escape sequences).
         """
         from prompt_toolkit.input import create_input
         from prompt_toolkit.keys import Keys
 
         inp = create_input()
         try:
+            # Drain stale events so we don't fire on leftover keypresses
+            # from the PromptSession that submitted the user's message
+            for _ in range(50):
+                try:
+                    await asyncio.wait_for(inp.read_keys(), timeout=0.02)
+                except asyncio.TimeoutError:
+                    break  # Buffer drained
+
             while True:
                 keys = await inp.read_keys()
                 for key in keys:
