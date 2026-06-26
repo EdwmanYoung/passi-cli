@@ -308,6 +308,13 @@ class PassiCLI:
                     "agent_message in wire log. Session may have been saved mid-execution.",
                     len(pending_tool_results),
                 )
+            # Validate context: strip orphaned tool_results from pre-existing
+            # corrupted sessions (saved before the wire-replay fix was deployed).
+            cleaned = self._validate_context()
+            if cleaned:
+                self._print_system(
+                    f"Cleaned {cleaned} orphaned tool_result(s) from restored context."
+                )
             self._print_system(
                 f"Session loaded: {session_id}  |  "
                 f"Domain: {meta.domain}  |  "
@@ -441,6 +448,8 @@ class PassiCLI:
                 await self._process_message(user_input)
 
             except KeyboardInterrupt:
+                if self.agent:
+                    self.agent.interrupt()
                 self._print_system("Interrupted. Type /quit to exit.")
             except EOFError:
                 break
@@ -698,99 +707,12 @@ class PassiCLI:
 
     # ── Message Processing ─────────────────────────────────────────────
 
-    async def _wait_for_esc(self) -> None:
-        """Wait for ESC key press. Cross-platform via prompt_toolkit raw input.
-
-        Returns when ESC is pressed or the task is cancelled.
-
-        Uses a time-based debounce (0.5s) to ignore stale key events from the
-        PromptSession that submitted the user's message. On Windows/mintty,
-        the Enter key can produce residual escape sequences in the PTY that
-        arrive after the watcher starts.
-        """
-        from prompt_toolkit.input import create_input
-        from prompt_toolkit.keys import Keys
-
-        DEBOUNCE = 0.5  # seconds to ignore all keys after start
-        deadline = asyncio.get_event_loop().time() + DEBOUNCE
-
-        inp = create_input()
-        try:
-            while True:
-                keys = await inp.read_keys()
-                now = asyncio.get_event_loop().time()
-                for key in keys:
-                    if key.key == Keys.Escape and now >= deadline:
-                        return
-        except asyncio.CancelledError:
-            pass
-        finally:
-            inp.close()
-
-    async def _collect_agent_stream(
-        self,
-        message: str,
-        progress: Progress,
-        task: Any,
-    ) -> tuple[list[str], set[str], dict[str, Any] | None]:
-        """Run agent chat_stream and collect incremental events.
-
-        Returns (response_text, tool_calls_shown, pending_question).
-        Displays events via _print_* methods as they arrive.
-        """
-        assert self.agent is not None
-
-        response_text: list[str] = []
-        tool_calls_shown: set[str] = set()
-        pending_question: dict[str, Any] | None = None
-
-        try:
-            stream = self.agent.chat_stream(message)
-            async for event in stream:
-                if event.type == "thinking":
-                    progress.update(task, description=f"[dim]{event.content}[/dim]")
-                elif event.type == "text":
-                    progress.stop()
-                    response_text.append(event.content)
-                    self._print_agent(event.content)
-                    progress.start()
-                    progress.update(task, description="[dim]Continuing...[/dim]")
-                elif event.type == "tool_call":
-                    tc_key = f"{event.tool_name}:{event.content}"
-                    if tc_key not in tool_calls_shown:
-                        tool_calls_shown.add(tc_key)
-                        progress.stop()
-                        self._print_tool_call(event.tool_name or "", event.content or "")
-                        progress.start()
-                elif event.type == "tool_result":
-                    progress.stop()
-                    self._print_tool_result(event.tool_name or "", event.content or "")
-                    progress.start()
-                elif event.type == "error":
-                    progress.stop()
-                    self._print_error(f"Tool error: {event.content}")
-                    progress.start()
-                elif event.type == "pending_question":
-                    pending_question = {
-                        "question": event.content,
-                        "context": event.metadata.get("context", ""),
-                        "options": event.metadata.get("options"),
-                    }
-        except Exception as e:
-            progress.stop()
-            self._print_error(f"Agent error: {e}")
-
-        return response_text, tool_calls_shown, pending_question
-
     async def _process_message(self, message: str) -> None:
         """Process a user message through the agent with streaming.
 
-        Runs the agent stream and an ESC key watcher concurrently so the
-        user can interrupt a running agent/tool by pressing Escape.
-
-        Handles pending_question events from ask_user tool (plan Q&A,
-        step confirmation). After answering, loops back to process the
-        answer through the agent.
+        Press Ctrl+C to interrupt a running agent. KeyboardInterrupt
+        propagates via the OS (SIGINT) through asyncio and is caught by
+        the REPL loop, which calls agent.interrupt().
         """
         assert self.agent is not None
 
@@ -804,36 +726,43 @@ class PassiCLI:
             console=self.console,
             transient=True,
         ) as progress:
-            task = progress.add_task("[dim]Analyzing... (ESC to interrupt)[/dim]", total=None)
+            task = progress.add_task("[dim]Analyzing... (Ctrl+C to interrupt)[/dim]", total=None)
 
-            agent_task = asyncio.create_task(
-                self._collect_agent_stream(message, progress, task)
-            )
-            esc_task = asyncio.create_task(self._wait_for_esc())
-
-            done, pending = await asyncio.wait(
-                [esc_task, agent_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            if esc_task in done:
-                # ESC pressed — interrupt the agent
-                if self.agent:
-                    self.agent.interrupt()
+            try:
+                stream = self.agent.chat_stream(message)
+                async for event in stream:
+                    if event.type == "thinking":
+                        progress.update(task, description=f"[dim]{event.content}[/dim]")
+                    elif event.type == "text":
+                        progress.stop()
+                        response_text.append(event.content)
+                        self._print_agent(event.content)
+                        progress.start()
+                        progress.update(task, description="[dim]Continuing...[/dim]")
+                    elif event.type == "tool_call":
+                        tc_key = f"{event.tool_name}:{event.content}"
+                        if tc_key not in tool_calls_shown:
+                            tool_calls_shown.add(tc_key)
+                            progress.stop()
+                            self._print_tool_call(event.tool_name or "", event.content or "")
+                            progress.start()
+                    elif event.type == "tool_result":
+                        progress.stop()
+                        self._print_tool_result(event.tool_name or "", event.content or "")
+                        progress.start()
+                    elif event.type == "error":
+                        progress.stop()
+                        self._print_error(f"Tool error: {event.content}")
+                        progress.start()
+                    elif event.type == "pending_question":
+                        pending_question = {
+                            "question": event.content,
+                            "context": event.metadata.get("context", ""),
+                            "options": event.metadata.get("options"),
+                        }
+            except Exception as e:
                 progress.stop()
-                self._print_system("[dim]Interrupted — waiting for agent to stop...[/dim]")
-                try:
-                    response_text, tool_calls_shown, pending_question = (
-                        await asyncio.wait_for(agent_task, timeout=30)
-                    )
-                except asyncio.TimeoutError:
-                    agent_task.cancel()
-                    response_text, tool_calls_shown, pending_question = [], set(), None
-                esc_task.cancel()
-            else:
-                # Agent finished normally
-                esc_task.cancel()
-                response_text, tool_calls_shown, pending_question = agent_task.result()
+                self._print_error(f"Agent error: {e}")
 
             progress.stop()
 
@@ -1413,7 +1342,7 @@ class PassiCLI:
             f"[dim]Mode:[/dim] [bold]{mode}[/bold]  "
             f"[dim]Skills:[/dim] {skills}  "
             f"[dim]Session:[/dim] {sid}  "
-            f"[dim]ESC: interrupt | Ctrl+T: mode | Ctrl+S: save | Ctrl+L: clear | Ctrl+D: quit[/dim]"
+            f"[dim]Ctrl+C: interrupt | Ctrl+T: mode | Ctrl+S: save | Ctrl+L: clear | Ctrl+D: quit[/dim]"
         )
         self.console.print(bar, style=STATUS_STYLE)
         self._buffer_add("status_bar", bar)
@@ -1461,6 +1390,59 @@ class PassiCLI:
                 if isinstance(b, dict) and b.get("type") == "text"
             )
         return str(content)
+
+    def _validate_context(self) -> int:
+        """Remove orphaned tool_results messages from context after wire replay.
+
+        An orphaned tool_result is one whose preceding assistant message
+        has no matching tool_use blocks. This repairs pre-existing corrupted
+        sessions saved before the wire-replay discard fix was deployed.
+
+        Returns the number of messages removed.
+        """
+        msgs = self.runtime.context.get_messages()
+        valid: list[dict[str, Any]] = []
+        removed = 0
+
+        for msg in msgs:
+            if msg["role"] == "tool_results":
+                prev = valid[-1] if valid else None
+                if prev is None or prev["role"] != "assistant":
+                    removed += 1
+                    continue
+                content = prev.get("content", [])
+                if not isinstance(content, list):
+                    removed += 1
+                    continue
+                tool_use_ids = {
+                    b["id"] for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b
+                }
+                if not tool_use_ids:
+                    removed += 1
+                    continue
+                result_data = msg.get("content", [])
+                if isinstance(result_data, list):
+                    result_ids = {
+                        r.get("tool_use_id", "")
+                        for r in result_data
+                        if isinstance(r, dict)
+                    }
+                    if result_ids and result_ids.issubset(tool_use_ids):
+                        valid.append(msg)
+                    else:
+                        removed += 1
+                else:
+                    removed += 1
+            else:
+                valid.append(msg)
+
+        if removed:
+            self.runtime.context.clear()
+            for msg in valid:
+                self.runtime.context.add_message(msg["role"], msg["content"])
+
+        return removed
 
     # ── Output Renderers ────────────────────────────────────────────────
 

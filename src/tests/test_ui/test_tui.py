@@ -2724,3 +2724,263 @@ class TestLoadExistingSessionWireReplay:
                         assert block.get("type") != "tool_use", (
                             "Old session tool_use blocks must be stripped"
                         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Session restore: orphaned tool_results discard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSessionRestoreOrphanedToolResults:
+    """Orphaned tool_results (no matching agent_message) must be discarded,
+    not flushed to context. Flushing them causes Anthropic API 400:
+    "unexpected tool_use_id found in tool_result blocks".
+    """
+
+    @pytest.mark.asyncio
+    async def test_orphaned_at_end_of_wire_are_discarded(self, tmp_path):
+        """Tool_results without a following agent_message are discarded."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="test")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write wire with TOOL_RESULT but NO agent_message (crashed session)
+        from passi.wire.protocol import Wire, EventType
+        w = Wire()
+        w._wire_path = session_dir / "wire.jsonl"
+        w.emit(EventType.USER_MESSAGE, {"content": "Run analysis"}, sid)
+        w.emit(EventType.TOOL_RESULT, {
+            "name": "run_python",
+            "result": {"success": True, "stdout": "done"},
+            "tool_use_id": "call_orphan",
+        }, sid)
+        # NO agent_message — simulates crashed session
+
+        cli._resume_session_id = sid
+        cli._print_user = MagicMock()
+        cli._print_agent = MagicMock()
+        cli._print_system = MagicMock()
+        cli._print_error = MagicMock()
+        cli._repl = AsyncMock()
+
+        await cli.start()
+
+        msgs = runtime.context.get_messages()
+        # Only the user message should be in context — orphaned tool_results
+        # must NOT be added
+        assert len(msgs) == 1, f"Expected 1 message (user only), got {len(msgs)}: {msgs}"
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"] == "Run analysis"
+
+    @pytest.mark.asyncio
+    async def test_orphaned_before_user_message_are_discarded(self, tmp_path):
+        """Tool_results before a new user_message (with missing agent_message
+        in between) are discarded, not flushed."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="test")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        from passi.wire.protocol import Wire, EventType
+        w = Wire()
+        w._wire_path = session_dir / "wire.jsonl"
+        # First turn: complete (user → agent_message)
+        w.emit(EventType.USER_MESSAGE, {"content": "First question"}, sid)
+        w.emit(EventType.AGENT_MESSAGE, {"content": "Answer to first question."}, sid)
+        # Second turn: user message with tool_result but NO agent_message (crashed)
+        w.emit(EventType.USER_MESSAGE, {"content": "Second question"}, sid)
+        w.emit(EventType.TOOL_RESULT, {
+            "name": "read_file",
+            "result": {"success": True},
+            "tool_use_id": "call_orphan_2",
+        }, sid)
+        # NO agent_message for second turn
+
+        cli._resume_session_id = sid
+        cli._print_user = MagicMock()
+        cli._print_agent = MagicMock()
+        cli._print_system = MagicMock()
+        cli._print_error = MagicMock()
+        cli._repl = AsyncMock()
+
+        await cli.start()
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        # Should have user, assistant (text), user — NO tool_results
+        assert roles == ["user", "assistant", "user"], (
+            f"Expected [user, assistant, user], got {roles}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_legitimate_tool_results_still_work(self, tmp_path):
+        """Legitimate tool_results with matching agent_message are NOT discarded."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="test")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        from passi.wire.protocol import Wire, EventType
+        w = Wire()
+        w._wire_path = session_dir / "wire.jsonl"
+        w.emit(EventType.USER_MESSAGE, {"content": "Analyze data"}, sid)
+        w.emit(EventType.TOOL_RESULT, {
+            "name": "read_file",
+            "result": {"success": True},
+            "tool_use_id": "call_001",
+        }, sid)
+        w.emit(EventType.AGENT_MESSAGE, {"content": [
+            {"type": "text", "text": "I analyzed the data."},
+            {"type": "tool_use", "id": "call_001", "name": "read_file", "input": {}},
+        ]}, sid)
+        # Second complete turn
+        w.emit(EventType.USER_MESSAGE, {"content": "Next step"}, sid)
+        w.emit(EventType.TOOL_RESULT, {
+            "name": "run_python",
+            "result": {"success": True},
+            "tool_use_id": "call_002",
+        }, sid)
+        w.emit(EventType.AGENT_MESSAGE, {"content": [
+            {"type": "text", "text": "Done with step 2."},
+            {"type": "tool_use", "id": "call_002", "name": "run_python", "input": {}},
+        ]}, sid)
+
+        cli._resume_session_id = sid
+        cli._print_user = MagicMock()
+        cli._print_agent = MagicMock()
+        cli._print_system = MagicMock()
+        cli._print_error = MagicMock()
+        cli._repl = AsyncMock()
+
+        await cli.start()
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert roles == [
+            "user", "assistant", "tool_results",
+            "user", "assistant", "tool_results",
+        ], f"Expected two complete turns, got {roles}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Context validation after session load
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestValidateContext:
+    """_validate_context strips orphaned tool_results after wire replay."""
+
+    def test_orphaned_tool_results_are_removed(self, tmp_path):
+        """tool_results without preceding assistant message are removed."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        # Build context with an orphaned tool_results (no preceding assistant)
+        runtime.context.add_message("user", "Hello")
+        runtime.context.add_message("assistant", [{"type": "text", "text": "Hi!"}])
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "orphan_1", "content": "result for non-existent tool"}
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 1
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert roles == ["user", "assistant"]
+
+    def test_valid_tool_results_are_preserved(self, tmp_path):
+        """tool_results with matching tool_use in preceding assistant are kept."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        # Build a valid turn
+        runtime.context.add_message("user", "Run analysis")
+        runtime.context.add_message("assistant", [
+            {"type": "text", "text": "Running tool..."},
+            {"type": "tool_use", "id": "tool_1", "name": "run_python",
+             "input": {"code": "1+1"}},
+        ])
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "tool_1", "content": "result"}
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 0
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert roles == ["user", "assistant", "tool_results"]
+
+    def test_tool_results_after_tool_results_removed(self, tmp_path):
+        """Consecutive tool_results messages (no assistant in between) are removed."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        # Simulate: user, assistant (with tool_use A), tool_results (A),
+        # then another tool_results without assistant — orphaned
+        runtime.context.add_message("user", "Run analysis")
+        runtime.context.add_message("assistant", [
+            {"type": "tool_use", "id": "tool_a", "name": "tool_a",
+             "input": {}},
+        ])
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "tool_a", "content": "result a"}
+        ])
+        # Second tool_results without intervening assistant — orphaned
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "orphan", "content": "orphan result"}
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 1
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert roles == ["user", "assistant", "tool_results"]
+
+    def test_missing_tool_use_id_in_assistant_strips_results(self, tmp_path):
+        """tool_results with IDs not matching any tool_use are removed."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        runtime.context.add_message("user", "Query")
+        runtime.context.add_message("assistant", [
+            {"type": "tool_use", "id": "tool_1", "name": "tool_1",
+             "input": {}},
+        ])
+        # tool_results referencing tool_2 (not in assistant's tool_use blocks)
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "tool_2", "content": "result for non-existent tool"}
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 1
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert roles == ["user", "assistant"]
+
+    def test_assistant_without_tool_use_followed_by_results(self, tmp_path):
+        """Text-only assistant followed by tool_results — results are orphaned."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        runtime.context.add_message("user", "Hello")
+        runtime.context.add_message("assistant", [
+            {"type": "text", "text": "Hi, how can I help?"}
+        ])
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "tool_x", "content": "orphan"}
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 1
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert roles == ["user", "assistant"]
