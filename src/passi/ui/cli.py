@@ -153,12 +153,13 @@ class PassiCLI:
         self.console.print(WELCOME_BANNER, style=HEADER_STYLE)
 
         existing_sessions = self.runtime.session.list_sessions()
+        force_select = self._resume_session_id == "__select__"
 
         # Determine which session to use
-        if self._resume_session_id:
-            # CLI flag specified — load directly
+        if self._resume_session_id and self._resume_session_id != "__select__":
+            # CLI flag specified with ID — load directly
             await self._load_existing_session(self._resume_session_id)
-        elif existing_sessions:
+        elif force_select or existing_sessions:
             # Sessions exist — let user choose
             self._print_system(
                 f"Found {len(existing_sessions)} existing session(s) in this project."

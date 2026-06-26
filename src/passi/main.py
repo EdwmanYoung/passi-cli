@@ -59,7 +59,8 @@ def main(ctx: click.Context, config_path: str | None, provider: str | None, debu
 @click.option("--domain", "-d", default="multi-omics", help="Analysis domain")
 @click.option("--mode", "-m", "start_mode", type=click.Choice(["chat", "plan", "afk"]), default=None, help="Agent mode on startup")
 @click.option("--skills", "-s", default=None, help="Skills to activate on startup (comma-separated)")
-@click.option("--session", "-S", "resume_session", default=None, help="Resume an existing session by ID")
+@click.option("--session", "-S", "resume_session", default=None, is_flag=False, flag_value="__select__",
+              help="Resume an existing session by ID (without ID: show selection)")
 @click.pass_context
 def chat(ctx: click.Context, domain: str, start_mode: str | None, skills: str | None, resume_session: str | None) -> None:
     """Start interactive chat mode (Rich TUI)."""
