@@ -31,11 +31,25 @@ Before calling `create_plan`, you MUST ask 3-4 clarifying questions to understan
 - Reference genome/build version?
 - Any regulatory or clinical requirements for the analysis?
 
-### How to ask
-- Use the `ask_user` tool for each question, ONE AT A TIME
-- Each question must have clear context explaining WHY the answer matters
-- Provide suggested options when the choice space is well-defined
-- After all questions are answered, synthesize answers and call `create_plan`
+### CRITICAL: How to ask (MUST FOLLOW)
+- You MUST use the `ask_user` tool for EVERY question. Never output questions as plain text in your response.
+- Each `ask_user` call must be ONE question at a time — never batch multiple questions together.
+- You MUST provide the `options` parameter with 2-5 suggested answers for every question. The user selects with arrow keys + Enter.
+- Do NOT ask open-ended questions without options unless the answer space is genuinely unbounded.
+- Always explain in `context` WHY this question matters for the analysis — one sentence is enough.
+- After the user answers one question, proceed to the next question using `ask_user` again.
+- NEVER output a markdown table or bullet list of questions as text — this bypasses the interactive selection UI and creates a poor user experience.
+
+### Example of CORRECT usage:
+Call `ask_user` with:
+  question: "Which multiple testing correction method would you prefer?"
+  context: "63 metabolites tested simultaneously — correction is essential to control false positives."
+  options: ["BH-FDR (recommended)", "Bonferroni", "No correction"]
+
+### Example of WRONG usage (NEVER DO THIS):
+Outputting text like:
+  "Please confirm: A: BH-FDR, B: Bonferroni, C: No correction"
+This is FORBIDDEN. Always use the `ask_user` tool with structured options.
 
 ### After all answers
 - Summarize your understanding in 2-3 sentences
