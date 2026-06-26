@@ -5,24 +5,17 @@ Provides a professional bioinformatics chat interface with:
 - Skill system (metabolomics, pathway, stats, qc, multi_omics)
 - Hook system (pre_tool, post_tool, on_error, etc.)
 - Streaming agent responses
-- Keyboard shortcuts (Shift+Tab mode cycling, Ctrl+S save, Ctrl+L clear)
 - Status bar with mode/skills/session info
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
-import sys
-import threading
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -50,7 +43,7 @@ STATUS_STYLE = Style(color="#6B7280")
 
 WELCOME_BANNER = """
 ╔══════════════════════════════════════════════════════╗
-║     🧬  PassiAgent  v0.2.0                           ║
+║     P  PassiAgent  v0.2.0                            ║
 ║     Multi-Omics Bioinformatics Analysis Agent         ║
 ║                                                       ║
 ║  Type your analysis request or /help for commands     ║
@@ -61,7 +54,8 @@ HELP_TEXT = """
 **Agent Modes:**
 | Command | Description |
 |---------|-------------|
-| `/mode [chat|plan|afk]` | Switch agent mode (Shift+Tab to cycle) |
+| `/mode` | Cycle mode: chat -> plan -> afk -> chat |
+| `/mode [chat|plan|afk]` | Switch to a specific mode |
 | `/plan show` | Display the current analysis plan |
 | `/plan approve` | Approve plan for execution (plan mode) |
 | `/plan reject` | Reject and request re-planning |
@@ -78,7 +72,7 @@ HELP_TEXT = """
 | Command | Description |
 |---------|-------------|
 | `/hook list` | Show all configured hooks |
-| `/hook add <name> <event> <type>` | Add a new hook interactively |
+| `/hook add` | Add a new hook interactively |
 | `/hook remove <name>` | Remove a hook |
 | `/hook toggle <name>` | Enable/disable a hook |
 
@@ -97,8 +91,8 @@ HELP_TEXT = """
 | `/quit` or `/exit` | Exit PassiAgent |
 """
 
-# Mode cycle order for Shift+Tab
 _MODE_CYCLE = ["chat", "plan", "afk"]
+_MODE_LABELS = {"chat": "[chat]", "plan": "[plan]", "afk": "[afk]"}
 
 
 class PassiCLI:
@@ -111,10 +105,8 @@ class PassiCLI:
         self.agent: PassiAgent | None = None
         self._domain: str = "multi-omics"
         self._running: bool = True
-        self._mode_switch_requested: threading.Event = threading.Event()
-        self._shortcut_listener: threading.Thread | None = None
-        self._start_mode: str | None = None  # set by CLI --mode flag
-        self._start_skills: list[str] | None = None  # set by CLI --skills flag
+        self._start_mode: str | None = None
+        self._start_skills: list[str] | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -128,11 +120,10 @@ class PassiCLI:
         self.agent = PassiAgent(self.runtime)
         await self.agent.initialize()
 
-        # Derive initial mode from config or CLI flags
+        # Apply startup mode/skills from CLI flags
         if self._start_mode:
             plan_first = (self._start_mode == "plan")
-            skills_list = self._start_skills
-            self.agent.set_mode(mode=self._start_mode, plan_first=plan_first, skills=skills_list)
+            self.agent.set_mode(mode=self._start_mode, plan_first=plan_first, skills=self._start_skills)
         elif getattr(self.config, "afk_mode", False):
             self.agent.set_mode("afk")
         elif self._start_skills:
@@ -144,14 +135,11 @@ class PassiCLI:
         )
         self._print_status_bar()
 
-        # Start keyboard shortcut listener
-        self._start_shortcut_listener()
-
         # Main loop
         try:
             await self._repl()
         finally:
-            self._stop_shortcut_listener()
+            pass
 
     async def _shutdown(self) -> None:
         """Clean shutdown."""
@@ -168,10 +156,6 @@ class PassiCLI:
                 user_input = await self._get_input()
                 if not user_input.strip():
                     continue
-
-                # Check for mode switch request from shortcut
-                if self._mode_switch_requested.is_set():
-                    self._mode_switch_requested.clear()
 
                 # Handle slash commands
                 if user_input.startswith("/"):
@@ -193,16 +177,8 @@ class PassiCLI:
         """Get user input with mode-aware prompt styling."""
         loop = asyncio.get_running_loop()
         mode = self.agent.mode if self.agent else "chat"
-        mode_emoji = {"chat": "💬", "plan": "📋", "afk": "🤖"}.get(mode, "🧬")
-        prompt_text = Text(f"{mode_emoji} [{mode}] > ", style=USER_STYLE)
-
-        # Check for pending mode switch before reading input
-        if self._mode_switch_requested.is_set():
-            self._mode_switch_requested.clear()
-            self._cycle_mode()
-            mode = self.agent.mode if self.agent else "chat"
-            mode_emoji = {"chat": "💬", "plan": "📋", "afk": "🤖"}.get(mode, "🧬")
-            prompt_text = Text(f"{mode_emoji} [{mode}] > ", style=USER_STYLE)
+        label = _MODE_LABELS.get(mode, "[chat]")
+        prompt_text = Text(f"{label} > ", style=USER_STYLE)
 
         return await loop.run_in_executor(
             None,
@@ -215,7 +191,6 @@ class PassiCLI:
         """Process a user message through the agent with streaming."""
         assert self.agent is not None
 
-        # Use streaming for a more responsive feel
         response_text: list[str] = []
         tool_calls_shown: set[str] = set()
 
@@ -228,7 +203,6 @@ class PassiCLI:
             task = progress.add_task("[dim]Analyzing...[/dim]", total=None)
 
             try:
-                # Stream events from the agent
                 stream = self.agent.chat_stream(message)
                 async for event in stream:
                     if event.type == "thinking":
@@ -246,8 +220,6 @@ class PassiCLI:
                             progress.stop()
                             self._print_tool_call(event.tool_name or "", event.content or "")
                             progress.start()
-                    elif event.type == "done":
-                        pass  # final event
             except Exception as e:
                 progress.stop()
                 self._print_error(f"Agent error: {e}")
@@ -255,13 +227,7 @@ class PassiCLI:
 
             progress.stop()
 
-        # Check for pending question (ask_user tool)
-        if self.agent and hasattr(self.agent, '_last_response'):
-            response = getattr(self.agent, '_last_response', None)
-        else:
-            response = None
-
-        if response is None and not response_text:
+        if not response_text and not tool_calls_shown:
             self._print_agent("(no response)")
 
         self._print_status_bar()
@@ -369,30 +335,29 @@ class PassiCLI:
     # ── Mode Commands ──────────────────────────────────────────────────
 
     async def _cmd_mode(self, arg: str) -> None:
-        """Switch agent mode: /mode [chat|plan|afk]"""
+        """Switch agent mode: /mode [chat|plan|afk].  No argument = cycle."""
         assert self.agent is not None
         valid = {"chat", "plan", "afk"}
 
         if not arg:
-            # No argument = show current mode
-            self._print_system(
-                f"Current mode: [bold]{self.agent.mode}[/bold]. "
-                f"Use /mode [{'|'.join(valid)}] to switch."
-            )
+            # Cycle to next mode
+            self._cycle_mode()
             return
 
         mode = arg.strip().lower()
+        if mode == self.agent.mode:
+            self._print_system(f"Already in [bold]{mode}[/bold] mode.")
+            return
         if mode not in valid:
             self._print_system(f"Invalid mode '{mode}'. Choose: {', '.join(valid)}")
             return
 
-        plan_first = (mode == "plan")
-        self.agent.set_mode(mode=mode, plan_first=plan_first)
+        self.agent.set_mode(mode=mode, plan_first=(mode == "plan"))
         self._print_system(f"Mode switched to: [bold]{mode}[/bold]")
         self._print_status_bar()
 
     def _cycle_mode(self) -> None:
-        """Cycle to the next mode (called by Shift+Tab shortcut)."""
+        """Cycle to the next mode."""
         if self.agent is None:
             return
         current = self.agent.mode
@@ -402,9 +367,8 @@ class PassiCLI:
         except ValueError:
             next_idx = 0
         next_mode = _MODE_CYCLE[next_idx]
-        plan_first = (next_mode == "plan")
-        self.agent.set_mode(mode=next_mode, plan_first=plan_first)
-        self._print_system(f"Mode cycled to: [bold]{next_mode}[/bold] (Shift+Tab)")
+        self.agent.set_mode(mode=next_mode, plan_first=(next_mode == "plan"))
+        self._print_system(f"Mode cycled: [bold]{next_mode}[/bold]")
         self._print_status_bar()
 
     # ── Skill Commands ─────────────────────────────────────────────────
@@ -671,56 +635,6 @@ class PassiCLI:
         else:
             self._print_system("Usage: /plan [show|approve|reject]")
 
-    # ── Shortcut Listener ──────────────────────────────────────────────
-
-    def _start_shortcut_listener(self) -> None:
-        """Start a background thread for keyboard shortcuts.
-
-        Only starts if stdin is a real console (not redirected/pipe).
-        """
-        if not sys.stdin.isatty():
-            return  # No real console — shortcuts unavailable
-
-        self._shortcut_listener = threading.Thread(
-            target=self._shortcut_loop, daemon=True
-        )
-        self._shortcut_listener.start()
-
-    def _stop_shortcut_listener(self) -> None:
-        """Stop the shortcut listener thread."""
-        # The daemon thread will exit with the process
-
-    def _shortcut_loop(self) -> None:
-        """Listen for keyboard shortcuts in background thread."""
-        try:
-            if sys.platform == "win32":
-                self._shortcut_loop_win32()
-        except Exception:
-            pass  # Silently exit — shortcuts are optional
-
-    def _shortcut_loop_win32(self) -> None:
-        """Windows-specific shortcut detection using msvcrt."""
-        import msvcrt
-
-        while self._running:
-            try:
-                if msvcrt.kbhit():
-                    ch = msvcrt.getch()
-                    if ch == b'\x14':  # Ctrl+T → cycle mode
-                        self._mode_switch_requested.set()
-                    elif ch == b'\x13':  # Ctrl+S → save
-                        self._print_system("[Ctrl+S] Save checkpoint requested")
-                    elif ch == b'\x0c':  # Ctrl+L → clear
-                        self.console.clear()
-                else:
-                    import time
-                    time.sleep(0.1)
-            except OSError:
-                return  # Non-console stdin — exit thread
-            except Exception:
-                import time
-                time.sleep(0.5)
-
     # ── Helpers ─────────────────────────────────────────────────────────
 
     def _rebuild_prompt(self) -> None:
@@ -746,7 +660,7 @@ class PassiCLI:
             f"[dim]Mode:[/dim] [bold]{mode}[/bold]  "
             f"[dim]Skills:[/dim] {skills}  "
             f"[dim]Session:[/dim] {sid}  "
-            f"[dim](Shift+Tab: cycle mode | Ctrl+S: save | Ctrl+L: clear)[/dim]"
+            f"[dim](/mode: cycle mode | /save: checkpoint | /clear: reset)[/dim]"
         )
         self.console.print(bar, style=STATUS_STYLE)
 
