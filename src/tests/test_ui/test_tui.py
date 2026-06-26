@@ -2892,8 +2892,12 @@ class TestSessionRestoreOrphanedToolResults:
         roles = [m["role"] for m in msgs]
         assert roles == [
             "user", "assistant", "tool_results",
+            # Synthetic separator inserted because the last context message
+            # before the second user_message was tool_results — prevents
+            # consecutive user messages after Anthropic API conversion.
+            "assistant",
             "user", "assistant", "tool_results",
-        ], f"Expected two complete turns, got {roles}"
+        ], f"Expected two complete turns with separator, got {roles}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

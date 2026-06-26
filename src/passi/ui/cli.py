@@ -250,7 +250,18 @@ class PassiCLI:
             events = wp.read_session(session_id)
             restored = 0
             pending_tool_results: list[dict[str, Any]] = []
+            session_start_seen = False
             for event in events:
+                # Stop at the second session_start — subsequent cycles are
+                # from previous restore attempts and would produce consecutive
+                # user messages.
+                if event.type == "session_start":
+                    if session_start_seen:
+                        break
+                    session_start_seen = True
+                    continue
+                if event.type == "session_end":
+                    continue
                 try:
                     if event.type == "user_message":
                         # Discard orphaned tool results from an incomplete prior
@@ -263,6 +274,16 @@ class PassiCLI:
                                 len(pending_tool_results),
                             )
                             pending_tool_results = []
+                        # When the last context message is tool_results we need
+                        # an assistant message between it and the new user message
+                        # to maintain user/assistant alternation after conversion
+                        # (tool_results → user role).
+                        ctx_msgs = self.runtime.context.get_messages()
+                        if ctx_msgs and ctx_msgs[-1]["role"] == "tool_results":
+                            self.runtime.context.add_message(
+                                "assistant",
+                                [{"type": "text", "text": " "}],
+                            )
                         content = event.data.get("content", "")
                         if content:
                             self.runtime.context.add_message("user", content)
@@ -284,23 +305,70 @@ class PassiCLI:
                             # Old wire sessions lack tool_use_id in TOOL_RESULT events.
                             can_pair = self._can_pair_tool_results(content, pending_tool_results)
                             if can_pair:
-                                self.runtime.context.add_message("assistant", content)
-                                if pending_tool_results:
-                                    # Only add results that match tool_use IDs in this
-                                    # agent message. Extra results (e.g. from ask_user
-                                    # where the tool_use was popped from final_content)
-                                    # stay in the buffer for later pairing.
-                                    matched = [
-                                        tr for tr in pending_tool_results
-                                        if tr.get("tool_use_id") in self._extract_tool_use_ids(content)
+                                # The agent_message wire event combines content from all
+                                # ReAct-loop iterations. In the live session the tool_results
+                                # were followed by a *separate* assistant message (next API
+                                # call after tool execution). We split text that appears after
+                                # the last tool_use block into its own assistant message so
+                                # the converted sequence stays valid:
+                                #   assistant(tu) → user(tr) → assistant(follow-up text)
+                                if isinstance(content, list):
+                                    last_tu_idx = -1
+                                    for idx, block in enumerate(content):
+                                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                                            last_tu_idx = idx
+                                else:
+                                    last_tu_idx = -1
+
+                                if last_tu_idx >= 0:
+                                    pre_tr: Any = content[:last_tu_idx + 1]
+                                    post_tr: Any = content[last_tu_idx + 1:]
+                                else:
+                                    pre_tr = content
+                                    post_tr = []
+
+                                if last_tu_idx >= 0 and post_tr:
+                                    # Text after last tool_use → split so the follow-up
+                                    # text becomes a separate assistant message after
+                                    # the tool_results.
+                                    self.runtime.context.add_message("assistant", pre_tr)
+                                    if pending_tool_results:
+                                        matched = [
+                                            tr for tr in pending_tool_results
+                                            if tr.get("tool_use_id") in self._extract_tool_use_ids(pre_tr)
+                                        ]
+                                        unmatched = [
+                                            tr for tr in pending_tool_results
+                                            if tr.get("tool_use_id") not in self._extract_tool_use_ids(pre_tr)
+                                        ]
+                                        if matched:
+                                            self.runtime.context.add_message("tool_results", matched)
+                                        pending_tool_results = unmatched
+                                    post_clean: list[dict[str, Any]] = [
+                                        b for b in post_tr
+                                        if b.get("type") != "text" or b.get("text", "").strip()
                                     ]
-                                    unmatched = [
-                                        tr for tr in pending_tool_results
-                                        if tr.get("tool_use_id") not in self._extract_tool_use_ids(content)
-                                    ]
-                                    if matched:
-                                        self.runtime.context.add_message("tool_results", matched)
-                                    pending_tool_results = unmatched
+                                    if post_clean:
+                                        self.runtime.context.add_message("assistant", post_clean)
+                                else:
+                                    # No split needed: either no tool_use blocks, or
+                                    # the last block is already a tool_use. Add the
+                                    # message and pair tool_results normally.
+                                    # (The user_message handler inserts a separator
+                                    # if needed to avoid consecutive user messages.)
+                                    self.runtime.context.add_message("assistant", pre_tr)
+                                    if pending_tool_results:
+                                        matched = [
+                                            tr for tr in pending_tool_results
+                                            if tr.get("tool_use_id") in self._extract_tool_use_ids(pre_tr)
+                                        ]
+                                        unmatched = [
+                                            tr for tr in pending_tool_results
+                                            if tr.get("tool_use_id") not in self._extract_tool_use_ids(pre_tr)
+                                        ]
+                                        if matched:
+                                            self.runtime.context.add_message("tool_results", matched)
+                                        pending_tool_results = unmatched
                             else:
                                 clean = self._strip_tool_use_blocks(content)
                                 if clean:

@@ -64,11 +64,12 @@ class AnthropicClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
+        converted_msgs = self._convert_messages(messages)
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens if max_tokens is not None else self.config.max_tokens,
             "temperature": temperature if temperature is not None else self.config.temperature,
-            "messages": self._convert_messages(messages),
+            "messages": converted_msgs,
         }
         if system:
             kwargs["system"] = system

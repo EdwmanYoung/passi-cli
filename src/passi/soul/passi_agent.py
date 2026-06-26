@@ -379,6 +379,14 @@ class PassiAgent(Soul):
 
         # Emit user message
         self.wire.emit(EventType.USER_MESSAGE, {"content": user_message}, sid)
+        # The last context message may already be a user message (e.g. after
+        # session restore when the original conversation ended with a human
+        # response). Anthropic requires alternating roles, so insert a spacer.
+        ctx_msgs = self.runtime.context.get_messages()
+        if ctx_msgs and ctx_msgs[-1]["role"] == "user":
+            self.runtime.context.add_message(
+                "assistant", [{"type": "text", "text": " "}]
+            )
         self.runtime.context.add_message("user", user_message)
 
         self._agent_busy = True
@@ -754,6 +762,14 @@ class PassiAgent(Soul):
 
         # Emit user message
         self.wire.emit(EventType.USER_MESSAGE, {"content": user_message}, sid)
+        # The last context message may already be a user message (e.g. after
+        # session restore when the original conversation ended with a human
+        # response). Anthropic requires alternating roles, so insert a spacer.
+        ctx_msgs = self.runtime.context.get_messages()
+        if ctx_msgs and ctx_msgs[-1]["role"] == "user":
+            self.runtime.context.add_message(
+                "assistant", [{"type": "text", "text": " "}]
+            )
         self.runtime.context.add_message("user", user_message)
 
         self._agent_busy = True
