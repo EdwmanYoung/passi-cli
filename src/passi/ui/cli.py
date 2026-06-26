@@ -234,11 +234,13 @@ class PassiCLI:
                     content = event.data.get("content", "")
                     if content:
                         self.runtime.context.add_message("user", content)
+                        self._print_user(content)
                         restored += 1
                 elif event.type == "agent_message":
                     content = event.data.get("content", "")
                     if content:
                         self.runtime.context.add_message("assistant", content)
+                        self._print_agent(content)
                         restored += 1
             self._print_system(
                 f"Session loaded: {session_id}  |  "
