@@ -1367,16 +1367,24 @@ class PassiCLI:
         return tool_use_ids.issubset(result_ids)
 
     @staticmethod
-    def _strip_tool_use_blocks(content: Any) -> Any:
+    def _strip_tool_use_blocks(content: Any, keep_ids: set[str] | None = None) -> Any:
         """Remove tool_use blocks from content, keeping only text blocks.
 
+        If keep_ids is provided, tool_use blocks with those IDs are preserved
+        (for selective stripping of only unmatched blocks).
         During wire replay of old sessions, tool_use blocks can't be paired with
         tool_results, which causes Anthropic API errors. We preserve text only.
-        Returns None if no text blocks remain (caller should skip adding).
+        Returns None if no blocks remain (caller should skip adding).
         """
         if isinstance(content, list):
-            text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
-            return text_blocks if text_blocks else None
+            kept: list[dict[str, Any]] = []
+            for b in content:
+                if isinstance(b, dict):
+                    if b.get("type") == "text":
+                        kept.append(b)
+                    elif b.get("type") == "tool_use" and keep_ids and b.get("id") in keep_ids:
+                        kept.append(b)
+            return kept if kept else None
         return content
 
     @staticmethod
@@ -1441,7 +1449,7 @@ class PassiCLI:
                     removed += 1
             elif msg["role"] == "assistant":
                 # Case 2: orphaned tool_use — assistant has tool_use blocks
-                # but no tool_results message follows at all
+                # but no tool_results follow-up with matching IDs
                 content = msg.get("content", [])
                 if isinstance(content, list):
                     tool_use_ids = {
@@ -1450,9 +1458,22 @@ class PassiCLI:
                     }
                     if tool_use_ids:
                         next_msg = msgs[i + 1] if i + 1 < len(msgs) else None
-                        if next_msg is None or next_msg["role"] != "tool_results":
-                            # No tool_results at all — orphaned tool_use, strip
-                            stripped = self._strip_tool_use_blocks(content)
+                        matched = False
+                        if next_msg and next_msg["role"] == "tool_results":
+                            result_data = next_msg.get("content", [])
+                            if isinstance(result_data, list):
+                                result_ids = {
+                                    r.get("tool_use_id", "")
+                                    for r in result_data
+                                    if isinstance(r, dict)
+                                }
+                                if tool_use_ids.issubset(result_ids):
+                                    matched = True
+                        if not matched:
+                            # Compute intersection with result_ids for partial match.
+                            # Keep only tool_use blocks that DO have a matching result.
+                            matching_ids = result_ids & tool_use_ids if next_msg and next_msg["role"] == "tool_results" else set()
+                            stripped = self._strip_tool_use_blocks(content, keep_ids=matching_ids or None)
                             if stripped is not None:
                                 msg = dict(msg)
                                 msg["content"] = stripped

@@ -2944,7 +2944,7 @@ class TestValidateContext:
         assert roles == ["user", "assistant", "tool_results"]
 
     def test_missing_tool_use_id_in_assistant_strips_results(self, tmp_path):
-        """tool_results with IDs not matching any tool_use are removed."""
+        """tool_results with IDs not matching tool_use — both cleaned up."""
         cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
         assert cli.runtime is not None
 
@@ -2959,11 +2959,11 @@ class TestValidateContext:
         ])
 
         removed = cli._validate_context()
-        assert removed == 1
+        assert removed == 2  # both assistant (no text) and tool_results removed
 
         msgs = runtime.context.get_messages()
         roles = [m["role"] for m in msgs]
-        assert roles == ["user", "assistant"]
+        assert roles == ["user"]
 
     def test_assistant_without_tool_use_followed_by_results(self, tmp_path):
         """Text-only assistant followed by tool_results — results are orphaned."""
@@ -3046,3 +3046,34 @@ class TestValidateContext:
         msgs = runtime.context.get_messages()
         roles = [m["role"] for m in msgs]
         assert roles == ["user", "assistant", "tool_results"]
+
+    def test_partial_tool_use_match_strips_orphaned(self, tmp_path):
+        """Assistant tool_use {A,B} + tool_results for {A} only — B is orphaned."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        runtime.context.add_message("user", "Run")
+        runtime.context.add_message("assistant", [
+            {"type": "text", "text": "Running tools..."},
+            {"type": "tool_use", "id": "tool_a", "name": "run_python",
+             "input": {"code": "print(1)"}},
+            {"type": "tool_use", "id": "tool_b", "name": "run_python",
+             "input": {"code": "print(2)"}},
+        ])
+        # Only tool_a result — simulates interrupt after first tool in batch
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "tool_a", "content": "success"}
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 0  # No messages removed
+
+        msgs = runtime.context.get_messages()
+        assert len(msgs) == 3
+        assistant_content = msgs[1]["content"]
+        assert isinstance(assistant_content, list)
+        types = [b["type"] for b in assistant_content]
+        # tool_b (unmatched) stripped, tool_a (has result) preserved, text preserved
+        assert types == ["text", "tool_use"]
+        remaining_ids = [b["id"] for b in assistant_content if b["type"] == "tool_use"]
+        assert remaining_ids == ["tool_a"]
