@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 from datetime import datetime
 from html import escape
 from typing import Any
@@ -138,7 +139,8 @@ class PassiCLI:
 
     def __init__(self, config: PassiConfig) -> None:
         self.config = config
-        self.console = Console()
+        self._terminal_width = self._get_terminal_size_columns()
+        self.console = Console(width=self._terminal_width)
         self.runtime = Runtime(config)
         self.agent: PassiAgent | None = None
         self._domain: str = "multi-omics"
@@ -147,6 +149,7 @@ class PassiCLI:
         self._start_skills: list[str] | None = None
         self._resume_session_id: str | None = None
         self._input_history = InMemoryHistory()
+        self._resize_task: asyncio.Task | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -154,6 +157,9 @@ class PassiCLI:
         """Initialize and start the interactive CLI."""
         self.console.clear()
         self.console.print(WELCOME_BANNER, style=HEADER_STYLE)
+
+        # Start terminal resize monitor for auto-refresh
+        self._resize_task = asyncio.create_task(self._resize_monitor())
 
         existing_sessions = self.runtime.session.list_sessions()
         force_select = self._resume_session_id == "__select__"
@@ -317,9 +323,31 @@ class PassiCLI:
 
     async def _shutdown(self) -> None:
         """Clean shutdown."""
+        if self._resize_task:
+            self._resize_task.cancel()
         if self.agent:
             await self.agent.shutdown()
         self.console.print("\n[dim]Session ended.[/dim]")
+
+    @staticmethod
+    def _get_terminal_size_columns() -> int:
+        """Current terminal width columns, with a sensible fallback."""
+        try:
+            return shutil.get_terminal_size().columns
+        except Exception:
+            return 120
+
+    async def _resize_monitor(self) -> None:
+        """Poll terminal width and keep Console in sync on resize."""
+        while self._running:
+            await asyncio.sleep(0.5)
+            try:
+                current = self._get_terminal_size_columns()
+            except Exception:
+                continue
+            if current != self._terminal_width:
+                self._terminal_width = current
+                self.console.width = current
 
     # ── Main REPL ──────────────────────────────────────────────────────
 
