@@ -40,7 +40,12 @@ from passi.ui.cli import (
     _SENTINEL_QUIT,
     _PROMPT_STYLE,
 )
+import json
 from tests.fixtures.mock_llm import FakeLLMClient
+from passi.soul.protocol import AgentStreamEvent
+from passi.infra.plan import AnalysisPlan, PlanStep, StepStatus
+from passi.wire.protocol import WireEvent, EventType
+from passi.wire.persistence import WirePersistence
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1265,3 +1270,694 @@ class TestPassiCLIREPLShortcuts:
         assert "Ctrl+D" in HELP_TEXT
         assert "Alt+Enter" in HELP_TEXT
         assert "Ctrl+C" in HELP_TEXT
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 2 — Medium Gaps: InputSessionLabels, CtrlCKeybinding, PlanShowActive
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLIInputSessionLabels:
+    """Prompt label variations — _create_input_session message/rprompt."""
+
+    @pytest.mark.asyncio
+    async def test_label_default_chat(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent._mode = "chat"
+        try:
+            session = cli._create_input_session()
+        except Exception:
+            pytest.skip("No real terminal available for PromptSession")
+        label = session.message()
+        assert "chat" in str(label)
+
+    @pytest.mark.asyncio
+    async def test_label_agent_busy_shows_dot(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent._agent_busy = True
+        cli.agent._mode = "chat"
+        try:
+            session = cli._create_input_session()
+        except Exception:
+            pytest.skip("No real terminal available for PromptSession")
+        label = str(session.message())
+        assert "●" in label
+
+    @pytest.mark.asyncio
+    async def test_label_step_confirm_mode(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent._step_confirm_mode = True
+        cli.agent._agent_busy = False
+        try:
+            session = cli._create_input_session()
+        except Exception:
+            pytest.skip("No real terminal available for PromptSession")
+        label = str(session.message())
+        assert "[plan-step]" in label
+
+    @pytest.mark.asyncio
+    async def test_label_plan_qa_active(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent._plan_qa_active = True
+        cli.agent._agent_busy = False
+        cli.agent._step_confirm_mode = False
+        try:
+            session = cli._create_input_session()
+        except Exception:
+            pytest.skip("No real terminal available for PromptSession")
+        label = str(session.message())
+        assert "[plan-qa]" in label
+
+    @pytest.mark.asyncio
+    async def test_label_plan_mode(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent._mode = "plan"
+        cli.agent._agent_busy = False
+        cli.agent._step_confirm_mode = False
+        cli.agent._plan_qa_active = False
+        try:
+            session = cli._create_input_session()
+        except Exception:
+            pytest.skip("No real terminal available for PromptSession")
+        label = str(session.message())
+        assert "[plan]" in label
+
+    @pytest.mark.asyncio
+    async def test_rprompt_none_when_no_skills(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        cli._skills = []
+        try:
+            session = cli._create_input_session()
+        except Exception:
+            pytest.skip("No real terminal available for PromptSession")
+        assert session.rprompt is None
+
+
+class TestPassiCLICtrlCKeybinding:
+    """Ctrl+C key binding: interrupt agent when busy, clear input when idle."""
+
+    @pytest.mark.asyncio
+    async def test_ctrl_c_interrupts_agent_when_busy(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent._agent_busy = True
+        cli.agent.interrupt = MagicMock()
+
+        try:
+            session = cli._create_input_session()
+        except Exception:
+            pytest.skip("No real terminal available for PromptSession")
+
+        # Find the c-c key binding and invoke it
+        mock_event = MagicMock()
+        mock_event.current_buffer.text = "some input"
+        mock_event.current_buffer.reset = MagicMock()
+        mock_event.app.exit = MagicMock()
+
+        # Get the handler from key_bindings
+        for binding in session.key_bindings.bindings:
+            for key in binding.keys:
+                if str(key) == "c-c":
+                    binding.handler(mock_event)
+                    break
+
+        cli.agent.interrupt.assert_called_once()
+        mock_event.current_buffer.reset.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_ctrl_c_clears_input_when_idle(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent._agent_busy = False
+        cli.agent.interrupt = MagicMock()
+
+        try:
+            session = cli._create_input_session()
+        except Exception:
+            pytest.skip("No real terminal available for PromptSession")
+
+        mock_event = MagicMock()
+        mock_event.current_buffer.text = "some text"
+        mock_event.current_buffer.reset = MagicMock()
+        mock_event.app.exit = MagicMock()
+
+        for binding in session.key_bindings.bindings:
+            for key in binding.keys:
+                if str(key) == "c-c":
+                    binding.handler(mock_event)
+                    break
+
+        cli.agent.interrupt.assert_not_called()
+        mock_event.current_buffer.reset.assert_called()
+
+
+class TestPassiCLIPlanShowActive:
+    """/plan show with an active plan and multiple steps."""
+
+    @pytest.mark.asyncio
+    async def test_with_multiple_steps(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        plan = AnalysisPlan(
+            plan_id="plan-001",
+            title="Metabolomics Analysis",
+            steps=[
+                PlanStep(step_id="1", order=1, description="Load data", status=StepStatus.DONE),
+                PlanStep(step_id="2", order=2, description="Normalize", status=StepStatus.RUNNING),
+                PlanStep(step_id="3", order=3, description="Run DESeq2", status=StepStatus.PENDING),
+            ],
+        )
+        cli.agent.get_plan = MagicMock(return_value=plan)
+
+        await cli._cmd_plan("show")
+
+        # Table is a Rich Table object — check for it in call args
+        found_table = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'columns') and hasattr(arg, 'title'):
+                    found_table = True
+        assert found_table, "Should print a Table for the plan"
+
+    @pytest.mark.asyncio
+    async def test_all_status_icons(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        plan = AnalysisPlan(
+            plan_id="plan-002",
+            title="Status Check",
+            steps=[
+                PlanStep(step_id="1", order=1, description="Done step", status=StepStatus.DONE),
+                PlanStep(step_id="2", order=2, description="Running step", status=StepStatus.RUNNING),
+                PlanStep(step_id="3", order=3, description="Pending step", status=StepStatus.PENDING),
+                PlanStep(step_id="4", order=4, description="Failed step", status=StepStatus.FAILED),
+                PlanStep(step_id="5", order=5, description="Skipped step", status=StepStatus.SKIPPED),
+                PlanStep(step_id="6", order=6, description="Awaiting step", status=StepStatus.AWAITING_CONFIRMATION),
+                PlanStep(step_id="7", order=7, description="Interrupted step", status=StepStatus.INTERRUPTED),
+            ],
+        )
+        cli.agent.get_plan = MagicMock(return_value=plan)
+
+        await cli._cmd_plan("show")
+
+        # Get the Table object from console.print calls
+        table = None
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'columns') and hasattr(arg, 'title'):
+                    table = arg
+                    break
+        assert table is not None, "Should print a Table"
+
+        # Render the table to a string to check content
+        from rich.console import Console as RichConsole
+        string_console = RichConsole(force_terminal=True, width=120)
+        with string_console.capture() as capture:
+            string_console.print(table)
+        all_text = capture.get()
+
+        # Verify all status icons appear
+        assert "✓" in all_text
+        assert "●" in all_text
+        assert "○" in all_text
+        assert "✗" in all_text
+        assert "⏭" in all_text
+        assert "⏸" in all_text
+        assert "⚠" in all_text
+
+    @pytest.mark.asyncio
+    async def test_empty_arg_shows_plan(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        plan = AnalysisPlan(
+            plan_id="plan-003",
+            title="Pipeline",
+            steps=[PlanStep(step_id="1", order=1, description="QC", status=StepStatus.PENDING)],
+        )
+        cli.agent.get_plan = MagicMock(return_value=plan)
+
+        await cli._cmd_plan("")
+
+        found_table = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'columns') and hasattr(arg, 'title'):
+                    found_table = True
+        assert found_table, "Empty arg should show plan table"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 3 — Remaining Gaps: PlanRejectInline, MethodsFormats, Streaming
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLIPlanRejectInline:
+    """/plan reject without pre-supplied feedback — inline prompt path."""
+
+    @pytest.mark.asyncio
+    async def test_reject_without_feedback_prompts_user(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent.recycle_plan = AsyncMock(return_value=AgentMessage(
+            role="agent",
+            content=[{"type": "text", "text": "Plan revised with additional step."}],
+        ))
+        with patch.object(cli, "_get_input", return_value="add power analysis"):
+            await cli._cmd_plan("reject")
+
+        # Should prompt user for feedback
+        found_prompt = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "What would you like to change" in args_text:
+                found_prompt = True
+        assert found_prompt, "Should prompt for feedback"
+        # recycle_plan called with user feedback
+        cli.agent.recycle_plan.assert_called_once_with("add power analysis")
+
+    @pytest.mark.asyncio
+    async def test_reject_empty_feedback_cancels(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent.recycle_plan = AsyncMock()
+        with patch.object(cli, "_get_input", return_value=""):
+            await cli._cmd_plan("reject")
+
+        found_no_feedback = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "No feedback provided" in args_text:
+                found_no_feedback = True
+        assert found_no_feedback, "Should say no feedback provided"
+        cli.agent.recycle_plan.assert_not_called()
+
+
+class TestPassiCLIMethodsFormats:
+    """/methods and /formats commands."""
+
+    @pytest.mark.asyncio
+    async def test_methods_with_domain(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        await cli._cmd_methods("transcriptomics")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'markup') and "transcriptomics" in str(arg.markup):
+                    found = True
+        assert found, "Should display methods for transcriptomics domain"
+
+    @pytest.mark.asyncio
+    async def test_methods_defaults_to_current_domain(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._domain = "metabolomics"
+        await cli._cmd_methods("")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'markup') and "metabolomics" in str(arg.markup):
+                    found = True
+        assert found, "Should default to current metabolomics domain"
+
+    @pytest.mark.asyncio
+    async def test_methods_unknown_domain_shows_none(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        await cli._cmd_methods("nonexistent_domain_xyz")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "No methods found" in args_text:
+                found = True
+        assert found, "Should say no methods found for unknown domain"
+
+    @pytest.mark.asyncio
+    async def test_formats_with_domain(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        await cli._cmd_formats("genomics")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'markup') and "genomics" in str(arg.markup):
+                    found = True
+        assert found, "Should display formats for genomics domain"
+
+    @pytest.mark.asyncio
+    async def test_formats_unknown_domain_shows_none(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        await cli._cmd_formats("nonexistent_domain_xyz")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "No formats found" in args_text:
+                found = True
+        assert found, "Should say no formats found for unknown domain"
+
+
+class TestPassiCLIProcessMessageStreaming:
+    """Streaming edge cases in _process_message."""
+
+    @pytest.mark.asyncio
+    async def test_thinking_event_does_not_print(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        async def fake_stream(_msg):
+            yield AgentStreamEvent(type="thinking", content="Evaluating methods...")
+            yield AgentStreamEvent(type="done", content="")
+
+        cli.agent.chat_stream = fake_stream
+        cli._print_status_bar = MagicMock()  # Prevent status bar call from crashing
+
+        await cli._process_message("analyze")
+
+        # No text content should be printed for thinking events
+        text_found = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if isinstance(arg, str) and "Evaluating methods" in arg:
+                    text_found = True
+        assert not text_found, "Thinking events should not print agent text"
+
+    @pytest.mark.asyncio
+    async def test_no_response_fallback(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        async def fake_stream(_msg):
+            # Empty stream — no yields
+            if False:
+                yield
+
+        cli.agent.chat_stream = fake_stream
+        cli._print_status_bar = MagicMock()
+
+        await cli._process_message("query")
+
+        found_no_response = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'renderable'):
+                    if hasattr(arg.renderable, 'markup') and "no response" in str(arg.renderable.markup).lower():
+                        found_no_response = True
+                    elif isinstance(arg.renderable, str) and "no response" in arg.renderable.lower():
+                        found_no_response = True
+                elif isinstance(arg, str) and "no response" in arg.lower():
+                    found_no_response = True
+        assert found_no_response, "Should print (no response) for empty stream"
+
+    @pytest.mark.asyncio
+    async def test_answer_routed_for_pending_question(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        async def fake_stream(_msg):
+            yield AgentStreamEvent(
+                type="pending_question",
+                content="Which method?",
+                metadata={"context": "Step 3", "options": ["A", "B"]},
+            )
+            yield AgentStreamEvent(type="done", content="")
+
+        cli.agent.chat_stream = fake_stream
+        cli._print_status_bar = MagicMock()
+        cli._handle_pending_question = AsyncMock()
+
+        await cli._process_message("help me")
+
+        # Should delegate to _handle_pending_question
+        cli._handle_pending_question.assert_called_once()
+        args = cli._handle_pending_question.call_args[0]
+        assert args[0]["question"] == "Which method?"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 1 — Critical Gaps: PendingQuestion, Export, HookAddInteractive
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLIPendingQuestion:
+    """_handle_pending_question: ask_user tool interaction loop."""
+
+    @pytest.mark.asyncio
+    async def test_with_options(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_input", return_value="DESeq2"):
+            await cli._handle_pending_question({
+                "question": "Which method?",
+                "options": ["DESeq2", "edgeR", "limma"],
+            })
+        # Panel is a Rich Panel object — check renderable text
+        found_panel = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'renderable') and "Which method?" in str(arg.renderable):
+                    found_panel = True
+        assert found_panel, "Should display question in Panel"
+        # Options printed
+        found_opts = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "Options:" in args_text and "DESeq2" in args_text:
+                found_opts = True
+        assert found_opts, "Should display options"
+        # Answer routed to _process_message
+        cli._process_message.assert_called_once_with("DESeq2")
+
+    @pytest.mark.asyncio
+    async def test_without_options(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_input", return_value="yes"):
+            await cli._handle_pending_question({"question": "Proceed?"})
+        # No "Options:" in output
+        found_opts = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "Options:" in args_text:
+                found_opts = True
+        assert not found_opts, "Should not show Options when none provided"
+        cli._process_message.assert_called_once_with("yes")
+
+    @pytest.mark.asyncio
+    async def test_empty_answer_defaults_to_no_answer(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_input", return_value="   "):
+            await cli._handle_pending_question({"question": "Any feedback?"})
+        cli._process_message.assert_called_once_with("(no answer)")
+
+    @pytest.mark.asyncio
+    async def test_with_context(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_input", return_value="continue"):
+            await cli._handle_pending_question({
+                "question": "Ready?",
+                "context": "Running PCA on 1000 features...",
+            })
+        found_context = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "Running PCA" in args_text:
+                found_context = True
+        assert found_context, "Should print context"
+
+    @pytest.mark.asyncio
+    async def test_empty_context_skipped(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_input", return_value="ok"):
+            await cli._handle_pending_question({"question": "Continue?", "context": ""})
+        # Question should still be displayed in Panel
+        found_question = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'renderable') and "Continue?" in str(arg.renderable):
+                    found_question = True
+        assert found_question, "Question should be displayed even with empty context"
+
+    @pytest.mark.asyncio
+    async def test_cancel_via_empty_string(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_input", return_value=""):
+            await cli._handle_pending_question({"question": "Add more steps?"})
+        cli._process_message.assert_called_once_with("(no answer)")
+
+
+class TestPassiCLIExport:
+    """/export command: chatlog generation."""
+
+    @pytest.mark.asyncio
+    async def test_export_creates_chatlog_file(self, tmp_path):
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+
+        session = runtime.session.active_session
+        sid = session.session_id
+
+        # Create a wire.jsonl with sample events matching the active session
+        session_dir = tmp_path / "sessions" / sid
+        session_dir.mkdir(parents=True, exist_ok=True)
+        wire_path = session_dir / "wire.jsonl"
+        events = [
+            WireEvent(type=EventType.USER_MESSAGE, session_id=sid, data={"content": "analyze data"}),
+            WireEvent(type=EventType.AGENT_MESSAGE, session_id=sid, data={"content": "I will analyze."}),
+        ]
+        wire_path.write_text("\n".join(json.dumps(e.model_dump()) for e in events), encoding="utf-8")
+
+        # Mock session dir lookup to return our temp dir
+        with patch.object(runtime.session, "get_session_dir", return_value=session_dir):
+            export_dir = tmp_path / "export_results"
+            export_dir.mkdir(parents=True)
+            cli.config.result_dir = export_dir
+
+            await cli._cmd_export("")
+
+        # Check file created and contains expected content
+        chatlog_files = list(export_dir.glob("chatlog_*.md"))
+        assert len(chatlog_files) == 1
+        content = chatlog_files[0].read_text(encoding="utf-8")
+        assert "**User:**" in content
+        assert "analyze data" in content
+
+    @pytest.mark.asyncio
+    async def test_export_no_session_returns_early(self, tmp_path):
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        runtime.session._active_session = None
+        # Should not raise
+        await cli._cmd_export("")
+
+    @pytest.mark.asyncio
+    async def test_export_file_contains_expected_markdown(self, tmp_path):
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+
+        session = runtime.session.active_session
+        sid = session.session_id
+
+        session_dir = tmp_path / "sessions" / sid
+        session_dir.mkdir(parents=True, exist_ok=True)
+        wire_path = session_dir / "wire.jsonl"
+        events = [
+            WireEvent(type=EventType.USER_MESSAGE, session_id=sid, data={"content": "run qc"}),
+            WireEvent(type=EventType.AGENT_MESSAGE, session_id=sid, data={"content": "QC complete."}),
+        ]
+        wire_path.write_text("\n".join(json.dumps(e.model_dump()) for e in events), encoding="utf-8")
+
+        with patch.object(runtime.session, "get_session_dir", return_value=session_dir):
+            export_dir = tmp_path / "export_results"
+            export_dir.mkdir(parents=True)
+            cli.config.result_dir = export_dir
+
+            await cli._cmd_export("")
+
+        chatlog_files = list(export_dir.glob("chatlog_*.md"))
+        content = chatlog_files[0].read_text(encoding="utf-8")
+        assert "# Session Chat Log" in content
+        assert "**User:**" in content
+        assert "**Agent:**" in content
+        assert "run qc" in content
+        assert "QC complete." in content
+
+
+class TestPassiCLIHookAddInteractive:
+    """_cmd_hook_add_interactive: multi-step hook creation wizard."""
+
+    @pytest.mark.asyncio
+    async def test_full_shell_workflow(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        hm = cli.agent.get_hook_manager()
+        initial_count = len(hm.hooks)
+
+        with patch("passi.ui.cli.Prompt") as mock_prompt:
+            mock_prompt.ask.side_effect = [
+                "pre_commit",     # name
+                "pre_tool",       # event
+                "shell",          # type
+                "echo linting",   # command
+            ]
+            await cli._cmd_hook_add_interactive()
+
+        assert len(hm.hooks) == initial_count + 1
+        hook = hm.hooks[-1]
+        assert hook.name == "pre_commit"
+        assert hook.event == "pre_tool"
+        assert hook.type == "shell"
+        assert hook.command == "echo linting"
+        assert hook.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_cancelled_on_empty_name(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        hm = cli.agent.get_hook_manager()
+        initial_count = len(hm.hooks)
+
+        with patch("passi.ui.cli.Prompt") as mock_prompt:
+            mock_prompt.ask.return_value = "   "
+            await cli._cmd_hook_add_interactive()
+
+        assert len(hm.hooks) == initial_count  # No hook added
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "Cancelled" in args_text:
+                found = True
+        assert found, "Should print Cancelled"
+
+    @pytest.mark.asyncio
+    async def test_invalid_event_shows_error(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        hm = cli.agent.get_hook_manager()
+        initial_count = len(hm.hooks)
+
+        with patch("passi.ui.cli.Prompt") as mock_prompt:
+            mock_prompt.ask.side_effect = [
+                "test_hook",
+                "invalid_event",
+            ]
+            await cli._cmd_hook_add_interactive()
+
+        assert len(hm.hooks) == initial_count
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "Invalid event" in args_text:
+                found = True
+        assert found, "Should print Invalid event error"
+
+    @pytest.mark.asyncio
+    async def test_invalid_type_shows_error(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        hm = cli.agent.get_hook_manager()
+        initial_count = len(hm.hooks)
+
+        with patch("passi.ui.cli.Prompt") as mock_prompt:
+            mock_prompt.ask.side_effect = [
+                "test_hook",
+                "pre_tool",
+                "unsupported_type",
+            ]
+            await cli._cmd_hook_add_interactive()
+
+        assert len(hm.hooks) == initial_count
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "Type must be" in args_text:
+                found = True
+        assert found, "Should print Type must be error"
+
+    @pytest.mark.asyncio
+    async def test_python_hook_workflow(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        hm = cli.agent.get_hook_manager()
+
+        with patch("passi.ui.cli.Prompt") as mock_prompt:
+            # Python code: first 3 lines are code, 4th is empty to end
+            mock_prompt.ask.side_effect = [
+                "py_hook",       # name
+                "post_tool",     # event
+                "python",        # type
+                "import sys",    # code line 1
+                "print('ok')",   # code line 2
+                "",              # empty = end code input
+            ]
+            await cli._cmd_hook_add_interactive()
+
+        hook = hm.hooks[-1]
+        assert hook.name == "py_hook"
+        assert hook.type == "python"
+        assert hook.code == "import sys\nprint('ok')"
+        assert hook.command == ""

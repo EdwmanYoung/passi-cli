@@ -337,6 +337,11 @@ class PassiCLI:
         except EOFError:
             return _SENTINEL_QUIT
 
+    async def _get_user_input(self, prompt_text: str) -> str:
+        """Get user input with a custom prompt label, delegating to _get_input."""
+        self._print_system(prompt_text)
+        return await self._get_input()
+
     # ── Message Processing ─────────────────────────────────────────────
 
     async def _process_message(self, message: str) -> None:
