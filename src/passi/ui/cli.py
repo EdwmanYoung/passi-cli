@@ -150,6 +150,8 @@ class PassiCLI:
         self._input_history = InMemoryHistory()
         self._resize_task: asyncio.Task | None = None
         self._prompt_session: PromptSession[str] | None = None
+        self._render_buffer: list[tuple[str, tuple[Any, ...]]] = []
+        self._max_buffer_size = 200
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -157,6 +159,7 @@ class PassiCLI:
         """Initialize and start the interactive CLI."""
         self.console.clear()
         self.console.print(WELCOME_BANNER, style=HEADER_STYLE)
+        self._buffer_add("banner")
 
         # Start terminal resize monitor for auto-refresh
         self._resize_task = asyncio.create_task(self._resize_monitor())
@@ -329,6 +332,39 @@ class PassiCLI:
             await self.agent.shutdown()
         self.console.print("\n[dim]Session ended.[/dim]")
 
+    def _buffer_add(self, entry_type: str, *args: Any) -> None:
+        """Record an output entry for replay on terminal resize."""
+        self._render_buffer.append((entry_type, args))
+        if len(self._render_buffer) > self._max_buffer_size:
+            self._render_buffer = self._render_buffer[-self._max_buffer_size:]
+
+    def _repaint(self) -> None:
+        """Clear screen and re-render all buffered content at current width."""
+        self.console.clear()
+        for entry_type, args in self._render_buffer:
+            if entry_type == "banner":
+                self.console.print(WELCOME_BANNER, style=HEADER_STYLE)
+            elif entry_type == "user":
+                self.console.print(Panel(args[0], style=USER_STYLE, title="You", title_align="left"))
+            elif entry_type == "agent":
+                self.console.print(Panel(
+                    Markdown(args[0]), style=AGENT_STYLE,
+                    title="PassiAgent", title_align="left",
+                ))
+            elif entry_type == "tool_call":
+                self.console.print(f"🔧 {args[0]}({args[1]})", style=TOOL_STYLE)
+            elif entry_type == "tool_result":
+                self.console.print(f"  └─ {args[0]}", style=Style(color="#6B7280", dim=True))
+            elif entry_type == "system":
+                if len(args) > 1 and args[1]:
+                    self.console.print(args[0])
+                else:
+                    self.console.print(args[0], style=SYSTEM_STYLE)
+            elif entry_type == "error":
+                self.console.print(f"✗ {args[0]}", style=ERROR_STYLE)
+            elif entry_type == "status_bar":
+                self.console.print(args[0], style=STATUS_STYLE)
+
     async def _resize_monitor(self) -> None:
         """Poll terminal size; force Rich and prompt_toolkit to adapt on resize."""
         while self._running:
@@ -349,6 +385,9 @@ class PassiCLI:
                         app._on_resize()
                 except Exception:
                     pass
+                # Re-render buffered content at new width when idle
+                if not (self.agent and self.agent.agent_busy):
+                    self._repaint()
 
     # ── Main REPL ──────────────────────────────────────────────────────
 
@@ -1285,6 +1324,7 @@ class PassiCLI:
             f"[dim]Ctrl+T: mode | Ctrl+S: save | Ctrl+L: clear | Ctrl+D: quit[/dim]"
         )
         self.console.print(bar, style=STATUS_STYLE)
+        self._buffer_add("status_bar", bar)
 
     @staticmethod
     def _can_pair_tool_results(content: Any, tool_results: list[dict[str, Any]]) -> bool:
@@ -1334,6 +1374,7 @@ class PassiCLI:
 
     def _print_user(self, text: str) -> None:
         self.console.print(Panel(text, style=USER_STYLE, title="You", title_align="left"))
+        self._buffer_add("user", text)
 
     def _print_agent(self, text: str) -> None:
         if not text:
@@ -1344,6 +1385,7 @@ class PassiCLI:
             title="PassiAgent",
             title_align="left",
         ))
+        self._buffer_add("agent", text)
 
     def _print_tool_call(self, name: str, params_or_str: str | dict | Any) -> None:
         if isinstance(params_or_str, dict):
@@ -1353,19 +1395,24 @@ class PassiCLI:
         else:
             params_str = str(params_or_str)[:200]
         self.console.print(f"🔧 {name}({params_str})", style=TOOL_STYLE)
+        self._buffer_add("tool_call", name, params_str)
 
     def _print_tool_result(self, name: str, result: str) -> None:
         summary = str(result)[:200]
         self.console.print(f"  └─ {summary}", style=Style(color="#6B7280", dim=True))
+        self._buffer_add("tool_result", summary)
 
     def _print_system(self, text: str | Markdown) -> None:
+        is_md = isinstance(text, Markdown)
         if isinstance(text, str):
             self.console.print(text, style=SYSTEM_STYLE)
         else:
             self.console.print(text)
+        self._buffer_add("system", text, is_md)
 
     def _print_error(self, text: str) -> None:
         self.console.print(f"✗ {text}", style=ERROR_STYLE)
+        self._buffer_add("error", text)
 
 
 # ── Entry Point ─────────────────────────────────────────────────────────
