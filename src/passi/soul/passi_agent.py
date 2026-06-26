@@ -681,6 +681,23 @@ class PassiAgent(Soul):
                                 "options": pending_question.get("options"),
                             },
                         )
+                        # Add synthetic tool_results for remaining tool_use blocks
+                        # after ask_user to prevent orphaned tool_use in context
+                        for rtc in tool_calls[idx + 1 :]:
+                            rtc_id = rtc.get("id", "")
+                            if rtc_id:
+                                tool_results.append({
+                                    "tool_use_id": rtc_id,
+                                    "content": json.dumps(
+                                        {
+                                            "success": False,
+                                            "interrupted": True,
+                                            "message": f"Tool '{rtc['name']}' was not executed (paused for user input).",
+                                        },
+                                        ensure_ascii=False,
+                                        default=str,
+                                    ),
+                                })
                         break
 
             # Batch all tool results from this iteration into one message
