@@ -26,7 +26,7 @@ class AgentMessage(BaseModel):
 class AgentStreamEvent(BaseModel):
     """An event emitted during agent streaming."""
 
-    type: str = Field(..., description="'text', 'tool_call', 'tool_result', 'thinking', 'error', 'done'")
+    type: str = Field(..., description="'text', 'tool_call', 'tool_result', 'thinking', 'error', 'done', 'pending_question'")
     content: str | dict = Field(default="", description="Event payload")
     tool_name: str | None = Field(default=None)
     metadata: dict = Field(default_factory=dict)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from html import escape
 from typing import Any
 
 from prompt_toolkit import PromptSession
@@ -213,7 +214,16 @@ class PassiCLI:
         Loads session metadata, creates and initializes the agent, then replays
         user/assistant messages from the session's wire log into the context.
         """
-        meta = self.runtime.session.load_session(session_id)
+        try:
+            meta = self.runtime.session.load_session(session_id)
+        except FileNotFoundError:
+            self._print_error(f"Session not found: {session_id}")
+            await self._start_new_session()
+            return
+        except Exception as exc:
+            self._print_error(f"Failed to load session {session_id}: {exc}")
+            await self._start_new_session()
+            return
         self._domain = meta.domain
         self._print_system(f"Loading session: {session_id}")
 
@@ -230,22 +240,25 @@ class PassiCLI:
             events = wp.read_session(session_id)
             restored = 0
             for event in events:
-                if event.type == "user_message":
-                    content = event.data.get("content", "")
-                    if content:
-                        self.runtime.context.add_message("user", content)
-                        display = self._extract_display_text(content)
-                        if display:
-                            self._print_user(display)
-                        restored += 1
-                elif event.type == "agent_message":
-                    content = event.data.get("content", "")
-                    if content:
-                        self.runtime.context.add_message("assistant", content)
-                        display = self._extract_display_text(content)
-                        if display:
-                            self._print_agent(display)
-                        restored += 1
+                try:
+                    if event.type == "user_message":
+                        content = event.data.get("content", "")
+                        if content:
+                            self.runtime.context.add_message("user", content)
+                            display = self._extract_display_text(content)
+                            if display:
+                                self._print_user(display)
+                            restored += 1
+                    elif event.type == "agent_message":
+                        content = event.data.get("content", "")
+                        if content:
+                            self.runtime.context.add_message("assistant", content)
+                            display = self._extract_display_text(content)
+                            if display:
+                                self._print_agent(display)
+                            restored += 1
+                except Exception:
+                    pass
             self._print_system(
                 f"Session loaded: {session_id}  |  "
                 f"Domain: {meta.domain}  |  "
@@ -309,7 +322,10 @@ class PassiCLI:
 
                 # Handle slash commands
                 if user_input.startswith("/"):
-                    await self._handle_command(user_input)
+                    try:
+                        await self._handle_command(user_input)
+                    except Exception as exc:
+                        self._print_error(f"Command error: {exc}")
                     continue
 
                 # Chat message
@@ -392,7 +408,7 @@ class PassiCLI:
         def _rprompt() -> HTML | None:
             """Right-side prompt: active skills hint."""
             if self.agent and self.agent.active_skills:
-                skills = ",".join(self.agent.active_skills)
+                skills = ",".join(escape(s) for s in self.agent.active_skills)
                 return HTML(f"<rprompt>skills:{skills}</rprompt>")
             return None
 
@@ -451,7 +467,7 @@ class PassiCLI:
         self._print_system(prompt_text)
         return await self._get_input()
 
-    async def _get_selection(self, options: list[str]) -> str:
+    async def _get_selection(self, options: list[str] | None) -> str:
         """Present options as an interactive list with arrow key navigation.
 
         Up/down arrows move the selection highlight. Enter confirms the choice.
@@ -461,6 +477,8 @@ class PassiCLI:
         Returns the selected option text, _SENTINEL_CUSTOM_INPUT for custom input,
         or empty string if cancelled.
         """
+        if options is None:
+            return ""
         display_options = list(options)
         display_options.append("Custom input...")
 
@@ -501,10 +519,11 @@ class PassiCLI:
         def _bottom_toolbar() -> HTML:
             lines = []
             for i, opt in enumerate(display_options):
+                safe_opt = escape(str(opt))
                 if i == selected[0]:
-                    lines.append(f"<b>> {i + 1}. {opt}</b>")
+                    lines.append(f"<b>> {i + 1}. {safe_opt}</b>")
                 else:
-                    lines.append(f"  {i + 1}. {opt}")
+                    lines.append(f"  {i + 1}. {safe_opt}")
             return HTML("\n".join(lines))
 
         def _message() -> HTML:
@@ -569,6 +588,14 @@ class PassiCLI:
                             progress.stop()
                             self._print_tool_call(event.tool_name or "", event.content or "")
                             progress.start()
+                    elif event.type == "tool_result":
+                        progress.stop()
+                        self._print_tool_result(event.tool_name or "", event.content or "")
+                        progress.start()
+                    elif event.type == "error":
+                        progress.stop()
+                        self._print_error(f"Tool error: {event.content}")
+                        progress.start()
                     elif event.type == "pending_question":
                         pending_question = {
                             "question": event.content,
@@ -593,31 +620,56 @@ class PassiCLI:
 
     async def _handle_pending_question(self, question: dict[str, Any]) -> None:
         """Present a pending question to the user and route the answer back to the agent."""
-        q_text = question.get("question", "")
-        q_context = question.get("context", "")
-        q_options = question.get("options") or []
+        # Bug 8: recursion depth guard — avoid infinite recursion from nested questions
+        depth = getattr(self, "_pending_question_depth", 0) + 1
+        self._pending_question_depth = depth
+        if depth > 5:
+            self._print_error("Too many nested questions — aborting question chain.")
+            self._pending_question_depth = depth - 1
+            return
 
-        # Display the question
-        if q_context:
-            self._print_system(f"[dim]{q_context}[/dim]")
-        self.console.print(
-            Panel(q_text, style=SYSTEM_STYLE, title="PassiAgent asks", title_align="left")
-        )
+        try:
+            q_text = question.get("question", "")
+            q_context = question.get("context", "")
+            q_options = question.get("options") or []
 
-        # Get answer from user — use selection UI when options are provided
-        if q_options:
-            answer = await self._get_selection(q_options)
-            if answer == _SENTINEL_CUSTOM_INPUT:
+            # Display the question
+            if q_context:
+                self._print_system(f"[dim]{q_context}[/dim]")
+            self.console.print(
+                Panel(q_text, style=SYSTEM_STYLE, title="PassiAgent asks", title_align="left")
+            )
+
+            # Get answer from user — use selection UI when options are provided
+            if q_options:
+                answer = await self._get_selection(q_options)
+                if answer == _SENTINEL_CUSTOM_INPUT:
+                    answer = await self._get_user_input("Your answer: ")
+                elif not answer:
+                    # Bug 9: Cancel during selection (empty string) — don't proceed
+                    self._print_system("Question cancelled.")
+                    return
+            else:
                 answer = await self._get_user_input("Your answer: ")
-        else:
-            answer = await self._get_user_input("Your answer: ")
-        if not answer.strip():
-            answer = "(no answer)"
 
-        self._print_user(f"[response] {answer}")
+            # Bug 7: Sentinel leakage — check for sentinel values before processing
+            if answer and answer.startswith("\x00"):
+                if answer == _SENTINEL_QUIT:
+                    self._running = False
+                elif answer == _SENTINEL_CLEAR_SCREEN:
+                    self.console.clear()
+                # For other sentinels, silently skip
+                return
 
-        # Route answer back to agent for further processing
-        await self._process_message(answer)
+            if not answer.strip():
+                answer = "(no answer)"
+
+            self._print_user(f"[response] {answer}")
+
+            # Route answer back to agent for further processing
+            await self._process_message(answer)
+        finally:
+            self._pending_question_depth = depth - 1
 
     # ── Command Handling ───────────────────────────────────────────────
 
@@ -1140,6 +1192,8 @@ class PassiCLI:
     @staticmethod
     def _extract_display_text(content: Any) -> str:
         """Extract readable text from wire content (string or LLM content blocks)."""
+        if content is None:
+            return ""
         if isinstance(content, list):
             return " ".join(
                 b.get("text", "") for b in content
@@ -1170,6 +1224,10 @@ class PassiCLI:
         else:
             params_str = str(params_or_str)[:200]
         self.console.print(f"🔧 {name}({params_str})", style=TOOL_STYLE)
+
+    def _print_tool_result(self, name: str, result: str) -> None:
+        summary = str(result)[:200]
+        self.console.print(f"  └─ {summary}", style=Style(color="#6B7280", dim=True))
 
     def _print_system(self, text: str | Markdown) -> None:
         if isinstance(text, str):

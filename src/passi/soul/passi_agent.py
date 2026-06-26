@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -28,6 +29,16 @@ from passi.tools.registry import ToolRegistry
 from passi.wire.protocol import EventType, Wire, WireEvent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ReactEvent:
+    """Internal event yielded during ReAct loop execution for real-time streaming."""
+
+    type: str  # "thinking", "text", "tool_call", "tool_result", "error", "done", "pending_question"
+    content: str = ""
+    tool_name: str = ""
+    metadata: dict = field(default_factory=dict)
 
 
 class PassiAgent(Soul):
@@ -367,18 +378,41 @@ class PassiAgent(Soul):
         self.wire.emit(EventType.USER_MESSAGE, {"content": user_message}, sid)
         self.runtime.context.add_message("user", user_message)
 
-        # Set busy flag
         self._agent_busy = True
+        try:
+            final_result: AgentMessage | None = None
+            async for event in self._run_react_loop_stream(user_message, attachments):
+                if event.type == "done":
+                    final_result = event.metadata.get("agent_message")
+            if final_result is None:
+                return AgentMessage(role="agent", content=[{"type": "text", "text": ""}])
+            return final_result
+        finally:
+            self._agent_busy = False
+            self.runtime.session.touch()
 
-        # ReAct loop
+    async def _run_react_loop_stream(
+        self,
+        user_message: str,
+        attachments: list[str] | None = None,
+    ) -> AsyncIterator[_ReactEvent]:
+        """Run the ReAct loop, yielding events at each step for real-time streaming.
+
+        The caller (chat() or chat_stream()) handles user message setup and
+        the _agent_busy flag. This generator only manages the ReAct loop itself.
+        """
+        session = self.runtime.session.active_session
+        sid = session.session_id if session else ""
+
         max_iterations = 20
         final_content: list[dict] = []
         pending_question: dict[str, Any] | None = None
 
         for iteration in range(max_iterations):
-            # Check for interrupt between iterations
             if self._interrupt_event.is_set():
                 break
+
+            yield _ReactEvent(type="thinking", content="Analyzing...")
 
             context = self.runtime.context.get_full_context()
             response = await self._llm_client.chat(
@@ -388,7 +422,7 @@ class PassiAgent(Soul):
                 max_tokens=self.config.get_llm_config().tool_call_max_tokens,
             )
 
-            # Track token usage from API for accurate compaction threshold
+            # Track token usage
             usage = response.get("usage", {})
             input_tokens = usage.get("input_tokens", 0)
             if input_tokens > 0:
@@ -399,16 +433,16 @@ class PassiAgent(Soul):
             agent_text = " ".join(text_parts)
             if agent_text:
                 final_content.append({"type": "text", "text": agent_text})
+                yield _ReactEvent(type="text", content=agent_text)
 
             # Handle tool calls
             tool_calls = response.get("tool_calls") or []
             if not tool_calls:
-                # No more tools — agent is done; store final assistant text
                 if agent_text:
                     self.runtime.context.add_message("assistant", agent_text)
                 break
 
-            # Store assistant message with tool_use blocks first (Anthropic format requirement)
+            # Store assistant message with tool_use blocks
             assistant_blocks: list[dict[str, Any]] = []
             for b in response["content"]:
                 if b.get("type") == "text" and b.get("text"):
@@ -422,13 +456,13 @@ class PassiAgent(Soul):
                     })
             self.runtime.context.add_message("assistant", assistant_blocks)
 
-            # Execute tools and collect results, then batch into one message
+            # Execute tools and collect results
             tool_results: list[dict[str, Any]] = []
             for tc in tool_calls:
                 tool_name = tc["name"]
                 tool_input = tc.get("input", {})
 
-                # ── Task tracking: create task ──
+                # ── Task tracking ──
                 plan_step_id = ""
                 if self._plan_manager is not None:
                     current_step = self._plan_manager.get_current_step()
@@ -448,19 +482,34 @@ class PassiAgent(Soul):
                     sid,
                 )
 
+                yield _ReactEvent(
+                    type="tool_call",
+                    content=json.dumps(tool_input, ensure_ascii=False, default=str),
+                    tool_name=tool_name,
+                )
+
                 # Clear interrupt flag before execution
                 self.clear_interrupt()
 
-                # Execute tool (pass interrupt event for interrupt-aware tools)
+                # Execute tool
                 start = time.perf_counter()
                 try:
-                    result = await self._tool_registry.execute(
-                        tool_name, tool_input, interrupt_event=self._interrupt_event
+                    try:
+                        result = await self._tool_registry.execute(
+                            tool_name, tool_input, interrupt_event=self._interrupt_event
+                        )
+                    except TypeError:
+                        result = await self._tool_registry.execute(tool_name, tool_input)
+                except Exception as exc:
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+                    yield _ReactEvent(
+                        type="error",
+                        content=str(exc),
+                        tool_name=tool_name,
                     )
-                except TypeError:
-                    # Tool doesn't accept interrupt_event — execute without it
-                    result = await self._tool_registry.execute(tool_name, tool_input)
-                elapsed_ms = (time.perf_counter() - start) * 1000
+                    result = {"success": False, "error": str(exc)}
+                else:
+                    elapsed_ms = (time.perf_counter() - start) * 1000
 
                 # Check if interrupted
                 if result.get("interrupted"):
@@ -469,7 +518,6 @@ class PassiAgent(Soul):
                         {"name": tool_name, "run_dir": result.get("run_dir", "")},
                         sid,
                     )
-                    # Mark plan step as interrupted
                     if self._plan_manager is not None:
                         current = self._plan_manager.get_current_step()
                         if current is not None:
@@ -478,7 +526,6 @@ class PassiAgent(Soul):
                                 status=StepStatus.INTERRUPTED,
                                 error_message="Interrupted by user",
                             )
-                    # Present recovery options via ask_user
                     pending_question = {
                         "question": (
                             f"Tool '{tool_name}' was interrupted. "
@@ -492,7 +539,15 @@ class PassiAgent(Soul):
                             "Abort analysis",
                         ],
                     }
-                    break  # break from tool execution loop
+                    yield _ReactEvent(
+                        type="pending_question",
+                        content=pending_question["question"],
+                        metadata={
+                            "context": pending_question["context"],
+                            "options": pending_question["options"],
+                        },
+                    )
+                    break
 
                 # Record provenance
                 input_files: list[str] = []
@@ -535,6 +590,14 @@ class PassiAgent(Soul):
                     EventType.TOOL_RESULT,
                     {"name": tool_name, "result": result},
                     sid,
+                )
+
+                result_summary = str(result.get("result", ""))[:200] or str(result.get("stdout", ""))[:200]
+                yield _ReactEvent(
+                    type="tool_result",
+                    content=result_summary,
+                    tool_name=tool_name,
+                    metadata={"success": result.get("success", False)},
                 )
 
                 # Notify hook manager on tool errors
@@ -586,7 +649,19 @@ class PassiAgent(Soul):
                             "context": result.get("context", ""),
                             "options": result.get("options"),
                         }
-                        break  # break from tool execution loop
+                        # Remove ask_user's tool_use block from final_content —
+                        # its "result" is a question, not computational output
+                        if final_content and final_content[-1].get("type") == "tool_use":
+                            final_content.pop()
+                        yield _ReactEvent(
+                            type="pending_question",
+                            content=pending_question["question"],
+                            metadata={
+                                "context": pending_question.get("context", ""),
+                                "options": pending_question.get("options"),
+                            },
+                        )
+                        break
 
             # Batch all tool results from this iteration into one message
             if tool_results:
@@ -618,50 +693,46 @@ class PassiAgent(Soul):
             sid,
         )
 
-        self._agent_busy = False
-        self.runtime.session.touch()
-        return agent_msg
+        yield _ReactEvent(
+            type="done",
+            content="",
+            metadata={"agent_message": agent_msg},
+        )
 
     async def chat_stream(
         self,
         user_message: str,
         attachments: list[str] | None = None,
     ) -> AsyncIterator[AgentStreamEvent]:
-        """Stream agent response with incremental events."""
+        """Stream agent response with incremental events in real-time."""
         if not self._initialized:
             await self.initialize()
 
-        yield AgentStreamEvent(type="thinking", content="Analyzing request...")
-        result = await self.chat(user_message, attachments)
+        assert self._llm_client is not None
+        assert self._tool_registry is not None
+        assert self._provenance is not None
 
-        # Replay the result as stream events
-        if isinstance(result.content, list):
-            for block in result.content:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        yield AgentStreamEvent(type="text", content=block["text"])
-                    elif block.get("type") == "tool_use":
-                        yield AgentStreamEvent(
-                            type="tool_call",
-                            content=str(block.get("input", "")),
-                            tool_name=block.get("name", ""),
-                        )
-        elif isinstance(result.content, str):
-            yield AgentStreamEvent(type="text", content=result.content)
+        session = self.runtime.session.active_session
+        sid = session.session_id if session else ""
 
-        # Yield pending question if present (from ask_user)
-        pending = result.metadata.get("pending_question")
-        if pending:
-            yield AgentStreamEvent(
-                type="pending_question",
-                content=pending.get("question", ""),
-                metadata={
-                    "context": pending.get("context", ""),
-                    "options": pending.get("options"),
-                },
-            )
+        # Emit user message
+        self.wire.emit(EventType.USER_MESSAGE, {"content": user_message}, sid)
+        self.runtime.context.add_message("user", user_message)
 
-        yield AgentStreamEvent(type="done", content="")
+        self._agent_busy = True
+        try:
+            yield AgentStreamEvent(type="thinking", content="Analyzing request...")
+
+            async for event in self._run_react_loop_stream(user_message, attachments):
+                yield AgentStreamEvent(
+                    type=event.type,
+                    content=event.content,
+                    tool_name=event.tool_name,
+                    metadata=event.metadata,
+                )
+        finally:
+            self._agent_busy = False
+            self.runtime.session.touch()
 
     async def execute_tool(self, tool_name: str, params: dict) -> AgentMessage:
         """Execute a tool directly."""

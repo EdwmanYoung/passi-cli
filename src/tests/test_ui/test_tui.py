@@ -9,6 +9,7 @@ FakeLLMClient, then exercise command handlers directly.
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -2297,3 +2298,230 @@ class TestPassiCLISessionsCommand:
             if "Unknown subcommand" in args_text or "bogus" in args_text:
                 found_error = True
         assert found_error, "Should show unknown subcommand error"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Extract Display Text Edge Cases (Bug 12)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLIExtractDisplayText:
+    """_extract_display_text handles various content types safely."""
+
+    def test_extract_with_none_returns_empty(self):
+        assert PassiCLI._extract_display_text(None) == ""
+
+    def test_extract_with_plain_string(self):
+        assert PassiCLI._extract_display_text("Hello world") == "Hello world"
+
+    def test_extract_with_content_blocks(self):
+        content = [
+            {"type": "text", "text": "First paragraph."},
+            {"type": "text", "text": "Second paragraph."},
+        ]
+        result = PassiCLI._extract_display_text(content)
+        assert "First paragraph" in result
+        assert "Second paragraph" in result
+
+    def test_extract_with_mixed_blocks_skips_non_text(self):
+        content = [
+            {"type": "text", "text": "Analysis result."},
+            {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}},
+        ]
+        result = PassiCLI._extract_display_text(content)
+        assert "Analysis result" in result
+        assert "read_file" not in result
+
+    def test_extract_with_empty_list_returns_empty(self):
+        assert PassiCLI._extract_display_text([]) == ""
+
+    def test_extract_with_int_returns_string(self):
+        assert PassiCLI._extract_display_text(42) == "42"
+
+    def test_extract_with_dict_returns_string(self):
+        result = PassiCLI._extract_display_text({"key": "value"})
+        assert "key" in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Get Selection Edge Cases (Bug 2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLIGetSelectionEdgeCases:
+    """_get_selection handles None, empty, and special-character options."""
+
+    @pytest.mark.asyncio
+    async def test_get_selection_with_none_returns_empty(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        result = await cli._get_selection(None)
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_get_selection_with_empty_list_does_not_crash(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        # Patch PromptSession to avoid real terminal interaction
+        mock_session = MagicMock()
+        mock_session.prompt_async = AsyncMock(return_value="Custom input...")
+
+        with patch("passi.ui.cli.PromptSession", return_value=mock_session):
+            result = await cli._get_selection([])
+        assert result == "Custom input..."
+
+    @pytest.mark.asyncio
+    async def test_get_selection_with_html_special_chars(self, tmp_path):
+        """Options with <, >, & should be HTML-escaped, not break XML parser."""
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        mock_session = MagicMock()
+        mock_session.prompt_async = AsyncMock(return_value="|log2FC| > 1.0")
+
+        with patch("passi.ui.cli.PromptSession", return_value=mock_session):
+            result = await cli._get_selection([
+                "p < 0.05",
+                "|log2FC| > 1.0",
+                "gene & expr",
+            ])
+        # If we get here without ExpatError, _bottom_toolbar HTML escaped correctly
+        assert result is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Process Message — tool_result and error Event Handlers (Bug 5)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLIProcessMessageEventHandlers:
+    """_process_message handles tool_result and error stream events."""
+
+    @pytest.mark.asyncio
+    async def test_tool_result_event_prints_result(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        async def fake_stream(_msg):
+            yield AgentStreamEvent(
+                type="tool_call",
+                content='{"path": "/data/file.csv"}',
+                tool_name="read_file",
+            )
+            yield AgentStreamEvent(
+                type="tool_result",
+                content="File read successfully: 100 lines",
+                tool_name="read_file",
+            )
+            yield AgentStreamEvent(type="done", content="")
+
+        cli.agent.chat_stream = fake_stream
+        cli._print_status_bar = MagicMock()
+
+        await cli._process_message("read data")
+
+        found_result = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                text = str(arg)
+                if "File read successfully" in text:
+                    found_result = True
+        assert found_result, "tool_result event should print result summary"
+
+    @pytest.mark.asyncio
+    async def test_error_event_prints_error(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        async def fake_stream(_msg):
+            yield AgentStreamEvent(
+                type="tool_call",
+                content='{"cmd": "invalid"}',
+                tool_name="run_python",
+            )
+            yield AgentStreamEvent(
+                type="error",
+                content="SyntaxError: invalid syntax",
+                tool_name="run_python",
+            )
+            yield AgentStreamEvent(type="done", content="")
+
+        cli.agent.chat_stream = fake_stream
+        cli._print_status_bar = MagicMock()
+
+        await cli._process_message("run code")
+
+        found_error = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                text = str(arg)
+                if "Tool error" in text and "SyntaxError" in text:
+                    found_error = True
+        assert found_error, "error event should print with ERROR_STYLE"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pending Question — Sentinel, Cancel, Recursion Guard (Bugs 7, 8, 9)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLIPendingQuestionEdgeCases:
+    """_handle_pending_question sentinel, cancellation, and recursion guarding."""
+
+    @pytest.mark.asyncio
+    async def test_pending_question_sentinel_quit(self, tmp_path):
+        """_SENTINEL_QUIT in answer stops the REPL, does not call _process_message."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._running = True
+        cli._get_user_input = AsyncMock(return_value=_SENTINEL_QUIT)
+        cli._process_message = AsyncMock()
+        cli._print_user = MagicMock()
+        cli._print_status_bar = MagicMock()
+
+        question = {"question": "Continue?", "context": "", "options": None}
+        await cli._handle_pending_question(question)
+
+        # Should set _running to False for quit sentinel
+        assert cli._running is False
+        # Should NOT route to _process_message
+        cli._process_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pending_question_sentinel_clear_screen(self, tmp_path):
+        """_SENTINEL_CLEAR_SCREEN clears console, does not call _process_message."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._get_user_input = AsyncMock(return_value=_SENTINEL_CLEAR_SCREEN)
+        cli._process_message = AsyncMock()
+        cli._print_user = MagicMock()
+        cli._print_status_bar = MagicMock()
+
+        question = {"question": "Continue?", "context": "", "options": None}
+        await cli._handle_pending_question(question)
+
+        mock_console.clear.assert_called_once()
+        cli._process_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pending_question_cancel_on_selection_empty(self, tmp_path):
+        """When _get_selection returns empty (cancelled), don't call _process_message."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._get_selection = AsyncMock(return_value="")  # User cancelled
+        cli._process_message = AsyncMock()
+        cli._print_user = MagicMock()
+        cli._print_status_bar = MagicMock()
+
+        question = {"question": "Choose:", "context": "", "options": ["A", "B"]}
+        await cli._handle_pending_question(question)
+
+        # Should NOT route cancelled question
+        cli._process_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pending_question_recursion_guard(self, tmp_path):
+        """After 5 nested questions, the recursion guard fires and stops."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._pending_question_depth = 5  # Already at limit
+        cli._process_message = AsyncMock()
+        cli._print_user = MagicMock()
+
+        question = {"question": "One more?", "context": "", "options": None}
+        await cli._handle_pending_question(question)
+
+        # Should NOT route — recursion guard prevents it
+        cli._process_message.assert_not_called()
+        # Depth should not increase
+        assert cli._pending_question_depth == 5

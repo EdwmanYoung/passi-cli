@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -547,3 +548,165 @@ class TestPassiAgentAskUser:
 
         result = await agent.chat("Read file")
         assert "pending_question" not in result.metadata
+
+
+class TestPassiAgentStreaming:
+    """Real-time streaming via _run_react_loop_stream and chat_stream()."""
+
+    @pytest.mark.asyncio
+    async def test_stream_yields_tool_result_events(self, tmp_path: Path):
+        """chat_stream yields tool_result events after each tool execution."""
+        test_file = tmp_path / "data.csv"
+        test_file.write_text("a,b,c\n1,2,3")
+
+        llm = FakeLLMClient("Using tool.")
+        llm.set_tool_calls([{
+            "id": "tc_1",
+            "name": "read_file",
+            "input": {"path": str(test_file)},
+        }])
+
+        agent = _make_agent(_make_runtime(tmp_path), llm)
+        events = [e async for e in agent.chat_stream("Read file")]
+        result_events = [e for e in events if e.type == "tool_result"]
+        assert len(result_events) >= 1
+        assert result_events[0].tool_name == "read_file"
+
+    @pytest.mark.asyncio
+    async def test_stream_yields_events_incrementally(self, tmp_path: Path):
+        """Events are yielded as they happen, not all at the end after completion."""
+        test_file = tmp_path / "data.csv"
+        test_file.write_text("a,b,c\n1,2,3")
+
+        llm = FakeLLMClient("Using tool.")
+        llm.set_tool_calls([{
+            "id": "tc_1",
+            "name": "read_file",
+            "input": {"path": str(test_file)},
+        }])
+
+        agent = _make_agent(_make_runtime(tmp_path), llm)
+        events = [e async for e in agent.chat_stream("Read file")]
+
+        # Events appear in correct order: thinking → text → tool_call → tool_result → done
+        event_types = [e.type for e in events]
+        assert "thinking" in event_types
+        assert "tool_call" in event_types
+        assert "tool_result" in event_types
+        assert "done" in event_types
+
+        # tool_call must appear before tool_result
+        tc_idx = event_types.index("tool_call")
+        tr_idx = event_types.index("tool_result")
+        assert tc_idx < tr_idx, "tool_call must come before tool_result"
+
+    @pytest.mark.asyncio
+    async def test_stream_pending_question_yields_event(self, tmp_path: Path):
+        """chat_stream yields pending_question event when ask_user is called."""
+        from passi.tools.ask_user_tool import AskUserTool
+
+        llm = FakeLLMClient("Asking...")
+        llm.set_tool_calls([{
+            "id": "ask_1",
+            "name": "ask_user",
+            "input": {
+                "question": "Confirm step?",
+                "context": "About to run analysis.",
+                "options": ["Yes", "No"],
+            },
+        }])
+
+        runtime = _make_runtime(tmp_path)
+        agent = PassiAgent(runtime)
+        registry = ToolRegistry()
+        registry.register(ReadFileTool(), "io")
+        registry.register(AskUserTool(), "system")
+        agent._llm_client = llm
+        agent._tool_registry = registry
+        agent._provenance = ProvenanceTracker(runtime.config.output_dir)
+        agent._initialized = True
+        runtime.session.create_session(domain="test")
+        runtime.context.set_system_prompt("You are a test agent.")
+        runtime.context.set_tools(registry.get_schemas(format="anthropic"))
+
+        events = [e async for e in agent.chat_stream("Run analysis")]
+        pq_events = [e for e in events if e.type == "pending_question"]
+        assert len(pq_events) == 1
+        assert pq_events[0].content == "Confirm step?"
+        assert pq_events[0].metadata.get("options") == ["Yes", "No"]
+
+    @pytest.mark.asyncio
+    async def test_stream_done_event_contains_agent_message(self, tmp_path: Path):
+        """The final done event carries the AgentMessage in its metadata."""
+        llm = FakeLLMClient("Analysis result.")
+        agent = _make_agent(_make_runtime(tmp_path), llm)
+
+        events = [e async for e in agent.chat_stream("Analyze")]
+        done_events = [e for e in events if e.type == "done"]
+        assert len(done_events) == 1
+        assert "agent_message" in done_events[0].metadata
+        assert done_events[0].metadata["agent_message"].role == "agent"
+
+
+class TestPassiAgentAgentBusyFlag:
+    """_agent_busy lifecycle during chat() and chat_stream()."""
+
+    @pytest.mark.asyncio
+    async def test_agent_busy_reset_after_chat(self, tmp_path: Path):
+        """_agent_busy is False after chat() completes."""
+        llm = FakeLLMClient("Response.")
+        agent = _make_agent(_make_runtime(tmp_path), llm)
+
+        assert agent._agent_busy is False
+        await agent.chat("Hello")
+        assert agent._agent_busy is False
+
+    @pytest.mark.asyncio
+    async def test_agent_busy_reset_after_chat_error(self, tmp_path: Path):
+        """_agent_busy is False even when chat() raises an exception."""
+        runtime = _make_runtime(tmp_path)
+        agent = PassiAgent(runtime)
+        agent._llm_client = MagicMock()
+        agent._llm_client.chat.side_effect = RuntimeError("LLM connection lost")
+        agent._tool_registry = MagicMock()
+        agent._provenance = MagicMock()
+        agent._initialized = True
+        runtime.session.create_session(domain="test")
+        runtime.context.set_system_prompt("You are a test agent.")
+        runtime.context.set_tools([])
+
+        assert agent._agent_busy is False
+        with pytest.raises(RuntimeError, match="LLM connection lost"):
+            await agent.chat("Hello")
+        assert agent._agent_busy is False
+
+    @pytest.mark.asyncio
+    async def test_agent_busy_reset_after_chat_stream(self, tmp_path: Path):
+        """_agent_busy is False after chat_stream() completes."""
+        llm = FakeLLMClient("Response.")
+        agent = _make_agent(_make_runtime(tmp_path), llm)
+
+        assert agent._agent_busy is False
+        async for _ in agent.chat_stream("Hello"):
+            pass
+        assert agent._agent_busy is False
+
+    @pytest.mark.asyncio
+    async def test_agent_busy_reset_after_chat_stream_error(self, tmp_path: Path):
+        """_agent_busy is False even when chat_stream() encounters an error."""
+        runtime = _make_runtime(tmp_path)
+        agent = PassiAgent(runtime)
+        agent._llm_client = MagicMock()
+        agent._llm_client.chat.side_effect = RuntimeError("LLM connection lost")
+        agent._tool_registry = MagicMock()
+        agent._provenance = MagicMock()
+        agent._initialized = True
+        runtime.session.create_session(domain="test")
+        runtime.context.set_system_prompt("You are a test agent.")
+        runtime.context.set_tools([])
+
+        assert agent._agent_busy is False
+        with pytest.raises(RuntimeError, match="LLM connection lost"):
+            async for _ in agent.chat_stream("Hello"):
+                pass
+        assert agent._agent_busy is False
