@@ -41,6 +41,7 @@ from passi.ui.cli import (
     _SENTINEL_SAVE,
     _SENTINEL_CLEAR_SCREEN,
     _SENTINEL_QUIT,
+    _SENTINEL_CUSTOM_INPUT,
     _PROMPT_STYLE,
 )
 import json
@@ -2596,6 +2597,50 @@ class TestCanPairToolResults:
     def test_can_pair_empty_tool_results(self):
         content = [{"type": "tool_use", "id": "call_abc", "name": "t", "input": {}}]
         assert PassiCLI._can_pair_tool_results(content, []) is False
+
+
+class TestGetSelectionFallback:
+    """_get_selection_fallback provides text-based option selection."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_returns_selected_option(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch("asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(return_value="2")
+            result = await cli._get_selection_fallback(["Option A", "Option B", "Option C"])
+            assert result == "Option B"
+
+    @pytest.mark.asyncio
+    async def test_fallback_last_number_is_custom_input(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch("asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(return_value="4")
+            result = await cli._get_selection_fallback(["A", "B", "C"])
+            assert result == _SENTINEL_CUSTOM_INPUT
+
+    @pytest.mark.asyncio
+    async def test_fallback_empty_input_returns_empty(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch("asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(return_value="")
+            result = await cli._get_selection_fallback(["A", "B"])
+            assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_fallback_invalid_number_returns_empty(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch("asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(return_value="99")
+            result = await cli._get_selection_fallback(["A", "B"])
+            assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_fallback_non_numeric_returns_empty(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch("asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(return_value="abc")
+            result = await cli._get_selection_fallback(["A", "B"])
+            assert result == ""
 
 
 class TestLoadExistingSessionWireReplay:

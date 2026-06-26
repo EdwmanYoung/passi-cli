@@ -575,6 +575,45 @@ class PassiCLI:
             return ""
         except EOFError:
             return ""
+        except Exception:
+            # Fallback: prompt_toolkit can't drive the terminal (non-TTY, IDE, etc.)
+            # Print a numbered list and use basic input()
+            return await self._get_selection_fallback(options)
+
+    async def _get_selection_fallback(self, options: list[str]) -> str:
+        """Basic input() fallback when prompt_toolkit can't render selection UI.
+
+        Prints a numbered list and reads the user's choice from stdin.
+        """
+        for i, opt in enumerate(options):
+            self.console.print(f"  {i + 1}. {opt}")
+        self.console.print(f"  {len(options) + 1}. Custom input...")
+
+        loop = asyncio.get_running_loop()
+        try:
+            choice = await loop.run_in_executor(
+                None,
+                lambda: input("Enter number (or empty to cancel): "),
+            )
+        except KeyboardInterrupt:
+            return ""
+        except EOFError:
+            return ""
+
+        if not choice.strip():
+            return ""
+        try:
+            idx = int(choice.strip()) - 1
+            if 0 <= idx < len(options):
+                return options[idx]
+            elif idx == len(options):
+                return _SENTINEL_CUSTOM_INPUT
+            else:
+                self._print_system(f"Invalid choice: {choice}. Please enter 1-{len(options) + 1}.")
+                return ""
+        except ValueError:
+            self._print_system(f"Invalid input: {choice}. Please enter a number.")
+            return ""
 
     # ── Message Processing ─────────────────────────────────────────────
 
