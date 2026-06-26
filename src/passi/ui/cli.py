@@ -253,9 +253,15 @@ class PassiCLI:
             for event in events:
                 try:
                     if event.type == "user_message":
-                        # Flush pending tool results before a new user turn
+                        # Discard orphaned tool results from an incomplete prior
+                        # turn. If the turn was complete, the agent_message handler
+                        # already paired and cleared pending_tool_results.
                         if pending_tool_results:
-                            self.runtime.context.add_message("tool_results", pending_tool_results)
+                            logger.warning(
+                                "Discarding %d orphaned tool_result(s) before user message — "
+                                "prior agent_message is missing from wire log.",
+                                len(pending_tool_results),
+                            )
                             pending_tool_results = []
                         content = event.data.get("content", "")
                         if content:
@@ -697,27 +703,24 @@ class PassiCLI:
 
         Returns when ESC is pressed or the task is cancelled.
 
-        Drains stale input events before listening — the PromptSession that
-        submitted the user's message may leave buffered key events (especially
-        on Windows/mintty where Enter can produce residual escape sequences).
+        Uses a time-based debounce (0.5s) to ignore stale key events from the
+        PromptSession that submitted the user's message. On Windows/mintty,
+        the Enter key can produce residual escape sequences in the PTY that
+        arrive after the watcher starts.
         """
         from prompt_toolkit.input import create_input
         from prompt_toolkit.keys import Keys
 
+        DEBOUNCE = 0.5  # seconds to ignore all keys after start
+        deadline = asyncio.get_event_loop().time() + DEBOUNCE
+
         inp = create_input()
         try:
-            # Drain stale events so we don't fire on leftover keypresses
-            # from the PromptSession that submitted the user's message
-            for _ in range(50):
-                try:
-                    await asyncio.wait_for(inp.read_keys(), timeout=0.02)
-                except asyncio.TimeoutError:
-                    break  # Buffer drained
-
             while True:
                 keys = await inp.read_keys()
+                now = asyncio.get_event_loop().time()
                 for key in keys:
-                    if key.key == Keys.Escape:
+                    if key.key == Keys.Escape and now >= deadline:
                         return
         except asyncio.CancelledError:
             pass
