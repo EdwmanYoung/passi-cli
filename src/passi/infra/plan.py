@@ -7,6 +7,7 @@ approve each step. Plans are persisted to session directories for audit.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -16,6 +17,20 @@ import yaml
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+def _slugify(text: str, max_len: int = 40) -> str:
+    """Convert a description into a filesystem-safe slug.
+
+    Lowercase, replace non-alphanumeric runs with a single underscore,
+    strip leading/trailing underscores, truncate to max_len.
+    """
+    slug = text.strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", slug)
+    slug = slug.strip("_")
+    if len(slug) > max_len:
+        slug = slug[:max_len].rstrip("_")
+    return slug
 
 
 class PlanStatus(str, Enum):
@@ -93,10 +108,12 @@ class PlanManager:
         plan_steps: list[PlanStep] = []
         if steps:
             for i, step_data in enumerate(steps, 1):
+                desc = step_data.get("description", "")
+                step_name = _slugify(desc) if desc else f"step_{i:02d}"
                 plan_steps.append(PlanStep(
-                    step_id=f"{plan_id}_step_{i:02d}",
+                    step_id=f"step_{i:02d}_{step_name}",
                     order=i,
-                    description=step_data.get("description", ""),
+                    description=desc,
                     tool_name=step_data.get("tool_name") or "",
                     expected_params=step_data.get("expected_params") or {},
                 ))

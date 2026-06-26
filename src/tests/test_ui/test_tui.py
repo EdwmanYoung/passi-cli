@@ -2984,3 +2984,65 @@ class TestValidateContext:
         msgs = runtime.context.get_messages()
         roles = [m["role"] for m in msgs]
         assert roles == ["user", "assistant"]
+
+    def test_orphaned_tool_use_stripped_from_assistant(self, tmp_path):
+        """Assistant with tool_use but no matching tool_results — tool_use stripped."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        runtime.context.add_message("user", "Run")
+        runtime.context.add_message("assistant", [
+            {"type": "text", "text": "Running tool..."},
+            {"type": "tool_use", "id": "orphan_tool", "name": "run_python",
+             "input": {"code": "print(1)"}},
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 0  # Message stripped, not removed (text remains)
+
+        msgs = runtime.context.get_messages()
+        assert len(msgs) == 2
+        assistant_content = msgs[1]["content"]
+        assert isinstance(assistant_content, list)
+        types = [b["type"] for b in assistant_content]
+        assert types == ["text"]
+
+    def test_orphaned_tool_use_no_text_removes_message(self, tmp_path):
+        """Assistant with only tool_use (no text) and no tool_results — removed."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        runtime.context.add_message("user", "Run")
+        runtime.context.add_message("assistant", [
+            {"type": "tool_use", "id": "orphan_tool", "name": "run_python",
+             "input": {"code": "print(1)"}},
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 1
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert roles == ["user"]
+
+    def test_valid_tool_use_preserved_with_results(self, tmp_path):
+        """Assistant with tool_use and valid tool_results follow-up — preserved."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        runtime.context.add_message("user", "Run")
+        runtime.context.add_message("assistant", [
+            {"type": "text", "text": "Running tool..."},
+            {"type": "tool_use", "id": "tool_1", "name": "run_python",
+             "input": {"code": "print(1)"}},
+        ])
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "tool_1", "content": "success"}
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 0
+
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert roles == ["user", "assistant", "tool_results"]

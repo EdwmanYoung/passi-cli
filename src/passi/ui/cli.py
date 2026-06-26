@@ -1392,30 +1392,35 @@ class PassiCLI:
         return str(content)
 
     def _validate_context(self) -> int:
-        """Remove orphaned tool_results messages from context after wire replay.
+        """Repair corrupted context after wire replay.
 
-        An orphaned tool_result is one whose preceding assistant message
-        has no matching tool_use blocks. This repairs pre-existing corrupted
-        sessions saved before the wire-replay discard fix was deployed.
+        Handles two corruption patterns:
+        1. Orphaned tool_results — a tool_results message whose preceding
+           assistant has no matching tool_use blocks.
+        2. Orphaned tool_use — an assistant message with tool_use blocks
+           that has no tool_results follow-up at all (caused by Ctrl+C
+           interrupting the ReAct loop mid-tool-execution).
 
-        Returns the number of messages removed.
+        Returns the number of messages removed or stripped.
         """
         msgs = self.runtime.context.get_messages()
-        valid: list[dict[str, Any]] = []
+        clean: list[dict[str, Any]] = []
         removed = 0
+        modified = False
 
-        for msg in msgs:
+        for i, msg in enumerate(msgs):
             if msg["role"] == "tool_results":
-                prev = valid[-1] if valid else None
+                # Case 1: orphaned tool_results — no matching preceding assistant
+                prev = clean[-1] if clean else None
                 if prev is None or prev["role"] != "assistant":
                     removed += 1
                     continue
-                content = prev.get("content", [])
-                if not isinstance(content, list):
+                prev_content = prev.get("content", [])
+                if not isinstance(prev_content, list):
                     removed += 1
                     continue
                 tool_use_ids = {
-                    b["id"] for b in content
+                    b["id"] for b in prev_content
                     if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b
                 }
                 if not tool_use_ids:
@@ -1429,17 +1434,39 @@ class PassiCLI:
                         if isinstance(r, dict)
                     }
                     if result_ids and result_ids.issubset(tool_use_ids):
-                        valid.append(msg)
+                        clean.append(msg)
                     else:
                         removed += 1
                 else:
                     removed += 1
+            elif msg["role"] == "assistant":
+                # Case 2: orphaned tool_use — assistant has tool_use blocks
+                # but no tool_results message follows at all
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    tool_use_ids = {
+                        b["id"] for b in content
+                        if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b
+                    }
+                    if tool_use_ids:
+                        next_msg = msgs[i + 1] if i + 1 < len(msgs) else None
+                        if next_msg is None or next_msg["role"] != "tool_results":
+                            # No tool_results at all — orphaned tool_use, strip
+                            stripped = self._strip_tool_use_blocks(content)
+                            if stripped is not None:
+                                msg = dict(msg)
+                                msg["content"] = stripped
+                                modified = True
+                            else:
+                                removed += 1
+                                continue
+                clean.append(msg)
             else:
-                valid.append(msg)
+                clean.append(msg)
 
-        if removed:
+        if removed or modified:
             self.runtime.context.clear()
-            for msg in valid:
+            for msg in clean:
                 self.runtime.context.add_message(msg["role"], msg["content"])
 
         return removed

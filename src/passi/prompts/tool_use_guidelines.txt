@@ -17,14 +17,14 @@
 - Document all analysis steps for reproducibility; use run_dirs to preserve scripts and outputs
 
 ## Output Organization (MANDATORY)
-All analysis outputs MUST be organized under the result directory by analysis step. Use this structure for every `run_python` or `run_r` call:
+All analysis outputs MUST be organized under the result directory by analysis step. The framework automatically creates the `code/`, `intermediate/`, and `outputs/` subdirectories for each step. Use this structure:
 
 ```
 $result_dir/
   step_01_<name>/
-    code/           — scripts (script.py, script.R)
-    intermediate/   — intermediate data files
-    outputs/        — final tables, figures, and reports
+    code/           — scripts (script.py, script.R) — auto-created by framework
+    intermediate/   — intermediate data files — auto-created by framework
+    outputs/        — final tables, figures, and reports — auto-created by framework
   step_02_<name>/
     code/
     intermediate/
@@ -33,6 +33,8 @@ $result_dir/
 ```
 
 - The `$result_dir` is provided in your system prompt context.
-- Every code execution should write outputs to the appropriate step's subdirectory.
+- Step directory names follow the plan's step_id pattern (`step_NN_descriptive_name`).
+- Use the `output_dir` parameter of `run_python`/`run_r` to specify the current step directory. The framework will auto-create required subdirectories — you do NOT need to call `os.makedirs()` in your code.
+- Write outputs to the appropriate subdirectory: figures and final tables to `outputs/`, intermediate data to `intermediate/`.
 - Use descriptive filenames with version indicators (e.g., `de_results_v2.tsv`, `pca_plot_final.png`).
 - Never dump all outputs in a flat directory — always organize by step.

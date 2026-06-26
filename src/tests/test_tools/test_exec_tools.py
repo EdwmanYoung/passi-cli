@@ -171,6 +171,31 @@ class TestRunPythonToolRunDir:
         assert custom.exists()
 
     @pytest.mark.asyncio
+    async def test_output_dir_creates_subdirectories(self, tmp_path: Path):
+        """output_dir path auto-creates code/, intermediate/, outputs/ subdirectories."""
+        custom = tmp_path / "my_run"
+        tool = RunPythonTool(runs_base=tmp_path / "runs", session_id_provider=lambda: "x")
+        params = RunPythonParams(code="print(1)", output_dir=str(custom))
+
+        result = await tool.execute(params)
+        assert result["success"] is True
+        assert (custom / "code").is_dir()
+        assert (custom / "intermediate").is_dir()
+        assert (custom / "outputs").is_dir()
+
+    @pytest.mark.asyncio
+    async def test_output_dir_script_in_code_subdir(self, tmp_path: Path):
+        """Script is written to code/ subdirectory, not run_dir root."""
+        custom = tmp_path / "my_run"
+        tool = RunPythonTool(runs_base=tmp_path / "runs", session_id_provider=lambda: "x")
+        params = RunPythonParams(code="print('hello')", output_dir=str(custom))
+
+        result = await tool.execute(params)
+        assert result["success"] is True
+        assert (custom / "code" / "script.py").exists()
+        assert not (custom / "script.py").exists()
+
+    @pytest.mark.asyncio
     async def test_failed_execution_still_creates_run_dir(self, tmp_path: Path):
         """Even on error, run_dir exists with stderr.log containing the error."""
         runs_base = tmp_path / "runs"

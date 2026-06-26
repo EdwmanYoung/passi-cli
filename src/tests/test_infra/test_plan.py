@@ -12,6 +12,7 @@ from passi.infra.plan import (
     PlanStatus,
     PlanStep,
     StepStatus,
+    _slugify,
 )
 
 
@@ -228,3 +229,56 @@ class TestPlanManager:
     def test_load_plan_no_file(self, tmp_path: Path):
         pm = PlanManager(tmp_path)
         assert pm.load_plan() is None
+
+    def test_step_id_uses_descriptive_name(self, tmp_path: Path):
+        """step_id follows pattern step_NN_slugified_name (not plan_UUID_step_NN)."""
+        pm = PlanManager(tmp_path)
+        pm.create_plan(
+            title="Test",
+            steps=[
+                {"description": "Data Inspection"},
+                {"description": "Preprocessing & Normalization"},
+                {"description": "Differential Analysis"},
+            ],
+        )
+        plan = pm.get_plan()
+        assert plan is not None
+        assert plan.steps[0].step_id == "step_01_data_inspection"
+        assert plan.steps[1].step_id == "step_02_preprocessing_normalization"
+        assert plan.steps[2].step_id == "step_03_differential_analysis"
+
+    def test_step_id_without_description_fallback(self, tmp_path: Path):
+        """Empty description falls back to step_NN_step_NN."""
+        pm = PlanManager(tmp_path)
+        pm.create_plan(
+            title="Test",
+            steps=[{"description": ""}],
+        )
+        plan = pm.get_plan()
+        assert plan is not None
+        assert plan.steps[0].step_id == "step_01_step_01"
+
+
+class TestSlugify:
+    """Unit tests for _slugify helper."""
+
+    def test_basic_lowercase(self):
+        assert _slugify("Data Inspection") == "data_inspection"
+
+    def test_special_chars_replaced(self):
+        assert _slugify("ROC & AUC Analysis") == "roc_auc_analysis"
+
+    def test_multi_spaces_collapsed(self):
+        assert _slugify("Run   DESeq2") == "run_deseq2"
+
+    def test_leading_trailing_underscores_stripped(self):
+        assert _slugify("  Hello World  ") == "hello_world"
+
+    def test_truncate_to_max_len(self):
+        long_text = "comprehensive differential expression analysis of rna seq data"
+        result = _slugify(long_text, max_len=30)
+        assert len(result) <= 30
+        assert not result.endswith("_")
+
+    def test_non_alpha_numeric_removed(self):
+        assert _slugify("Step #1: QC") == "step_1_qc"

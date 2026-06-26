@@ -98,13 +98,16 @@ class RunPythonTool(CallableTool[RunPythonParams]):
             run_dir = Path(params.output_dir)
             if not run_dir.is_absolute():
                 run_dir = self._project_root / run_dir
+            (run_dir / "code").mkdir(parents=True, exist_ok=True)
+            (run_dir / "intermediate").mkdir(parents=True, exist_ok=True)
+            (run_dir / "outputs").mkdir(parents=True, exist_ok=True)
+            script_path = run_dir / "code" / "script.py"
         else:
             sid = self._session_id_provider()
             step_name = self._step_name_provider()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S%f")
             if step_name:
                 run_dir = self.runs_base / step_name
-                # Subdirectories for code, intermediate, outputs
                 code_dir = run_dir / "code"
                 code_dir.mkdir(parents=True, exist_ok=True)
                 (run_dir / "intermediate").mkdir(parents=True, exist_ok=True)
