@@ -1,4 +1,4 @@
-"""Gene set enrichment analysis tools — GSEA (fgsea) and ORA (clusterProfiler).
+﻿"""Gene set enrichment analysis tools 鈥?GSEA (fgsea) and ORA (clusterProfiler).
 
 Supports preranked GSEA and over-representation analysis for GO, KEGG,
 and MSigDB gene sets. Executes via rpy2 or Rscript fallback.
@@ -16,10 +16,8 @@ from passi.tools.base import CallableTool
 
 logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════════════════════════
-# R code templates
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# R code templates
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 FGSEA_SCRIPT = r"""
 suppressMessages(library(fgsea))
 suppressMessages(library(jsonlite))
@@ -188,10 +186,8 @@ result <- list(
 writeLines(toJSON(result, auto_unbox=TRUE, pretty=TRUE), "{output_json}")
 """
 
-# ═══════════════════════════════════════════════════════════════════
-# Tool definitions
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# Tool definitions
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class EnrichmentParams(BaseModel):
     """Parameters for gene set enrichment analysis."""
@@ -233,7 +229,7 @@ class EnrichmentParams(BaseModel):
     min_size: int = Field(default=15, description="Minimum gene set size (fgsea)")
     max_size: int = Field(default=500, description="Maximum gene set size (fgsea)")
     n_perm: int = Field(default=10000, description="Number of permutations (fgsea)")
-    output_dir: str = Field(default="./output", description="Output directory for results")
+    output_dir: str = Field(default="./result", description="Output directory for results")
 
 
 class EnrichmentTool(CallableTool[EnrichmentParams]):
@@ -247,8 +243,8 @@ class EnrichmentTool(CallableTool[EnrichmentParams]):
     name = "enrichment_analysis"
     description = (
         "Run gene set enrichment analysis on omics results. "
-        "Supports preranked GSEA (fgsea) — provide a ranked gene list and optionally a GMT file. "
-        "Also supports over-representation analysis (ORA) via clusterProfiler — provide DE results "
+        "Supports preranked GSEA (fgsea) 鈥?provide a ranked gene list and optionally a GMT file. "
+        "Also supports over-representation analysis (ORA) via clusterProfiler 鈥?provide DE results "
         "with gene IDs and p-values. Returns enriched pathways with statistics."
     )
     params_model = EnrichmentParams

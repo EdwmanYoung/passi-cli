@@ -32,6 +32,8 @@ class StepStatus(str, Enum):
     DONE = "done"
     FAILED = "failed"
     SKIPPED = "skipped"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    INTERRUPTED = "interrupted"
 
 
 class PlanStep(BaseModel):

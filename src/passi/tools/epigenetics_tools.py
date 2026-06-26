@@ -1,4 +1,4 @@
-"""Epigenetics analysis tools — peak QC, methylation analysis.
+﻿"""Epigenetics analysis tools 鈥?peak QC, methylation analysis.
 
 Handles ChIP-seq/ATAC-seq peak files (narrowPeak, broadPeak, BED) and
 DNA methylation data (beta matrices, Bismark coverage files).
@@ -18,17 +18,15 @@ from passi.tools.base import CallableTool
 logger = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Tool 1: Peak QC
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# Tool 1: Peak QC
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class PeakQcParams(BaseModel):
     """Parameters for peak file QC analysis."""
 
     peak_path: str = Field(..., description="Path to peak file (narrowPeak, broadPeak, or BED)")
     align_path: str = Field(default="", description="Optional path to BAM file for FRiP calculation")
-    output_dir: str = Field(default="./output", description="Output directory")
+    output_dir: str = Field(default="./result", description="Output directory")
 
 
 class PeakQcTool(CallableTool[PeakQcParams]):
@@ -127,9 +125,9 @@ class PeakQcTool(CallableTool[PeakQcParams]):
         recommendations = []
         median_width = stats["width"]["median"]
         if median_width < 150:
-            recommendations.append("Peak widths are narrow (median < 150bp) — typical for ATAC-seq or TF ChIP-seq")
+            recommendations.append("Peak widths are narrow (median < 150bp) 鈥?typical for ATAC-seq or TF ChIP-seq")
         elif median_width > 500:
-            recommendations.append("Peak widths are broad (median > 500bp) — typical for histone marks")
+            recommendations.append("Peak widths are broad (median > 500bp) 鈥?typical for histone marks")
 
         if stats.get("frip", {}).get("frip_score", 1.0) < 0.01:
             recommendations.append("FRiP < 1%: Low signal-to-noise ratio, check IP efficiency")
@@ -141,7 +139,7 @@ class PeakQcTool(CallableTool[PeakQcParams]):
             recommendations.append("Very high peak count (>100K): consider increasing stringency")
 
         if not recommendations:
-            recommendations.append("Peak QC metrics are within normal ranges — proceed with downstream analysis")
+            recommendations.append("Peak QC metrics are within normal ranges 鈥?proceed with downstream analysis")
 
         return {
             "success": True,
@@ -230,10 +228,8 @@ def _calculate_frip(peaks: list[dict], bam_path: Path) -> dict[str, Any] | None:
         return None
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Tool 2: Methylation Analysis
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# Tool 2: Methylation Analysis
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class MethylationAnalysisParams(BaseModel):
     """Parameters for methylation data analysis."""
@@ -241,7 +237,7 @@ class MethylationAnalysisParams(BaseModel):
     data_path: str = Field(..., description="Path to methylation data (beta matrix TSV or Bismark .cov)")
     metadata_path: str = Field(default="", description="Optional sample metadata for group comparison")
     group_col: str = Field(default="", description="Column name for group comparison")
-    output_dir: str = Field(default="./output", description="Output directory")
+    output_dir: str = Field(default="./result", description="Output directory")
 
 
 class MethylationAnalysisTool(CallableTool[MethylationAnalysisParams]):
@@ -275,7 +271,7 @@ class MethylationAnalysisTool(CallableTool[MethylationAnalysisParams]):
         except Exception as e:
             return {"success": False, "error": f"Failed to read methylation data: {e}"}
 
-        # Detect format: beta matrix (CpG × samples) or Bismark cov
+        # Detect format: beta matrix (CpG 脳 samples) or Bismark cov
         beta_cols = [c for c in df.columns if _is_beta_column(df[c])]
         is_beta_matrix = len(beta_cols) > 1
 
@@ -359,12 +355,12 @@ class MethylationAnalysisTool(CallableTool[MethylationAnalysisParams]):
         # Recommendations
         recommendations = []
         if global_mean < 0.3:
-            recommendations.append("Global methylation is low — typical for CpG-poor regions or specific tissues")
+            recommendations.append("Global methylation is low 鈥?typical for CpG-poor regions or specific tissues")
         elif global_mean > 0.7:
-            recommendations.append("Global methylation is high — verify bisulfite conversion efficiency")
+            recommendations.append("Global methylation is high 鈥?verify bisulfite conversion efficiency")
 
         if result.get("differential_methylation", {}).get("total_dm", 0) > 1000:
-            recommendations.append("Large number of DMCs detected — consider DMR aggregation")
+            recommendations.append("Large number of DMCs detected 鈥?consider DMR aggregation")
 
         return {
             "success": True,
@@ -396,7 +392,7 @@ class MethylationAnalysisTool(CallableTool[MethylationAnalysisParams]):
                 "output_dir": str(output_dir),
             }
 
-        return {"success": False, "error": "Unrecognized Bismark format — expected 5+ columns"}
+        return {"success": False, "error": "Unrecognized Bismark format 鈥?expected 5+ columns"}
 
 
 def _read_methylation_data(path: Path) -> Any:

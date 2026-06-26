@@ -41,6 +41,9 @@ class HookEvent:
     ON_MESSAGE = "on_message"
     ON_SESSION_START = "on_session_start"
     ON_SESSION_END = "on_session_end"
+    ON_PLAN_QA = "on_plan_qa"
+    ON_PLAN_RECYCLE = "on_plan_recycle"
+    ON_STEP_CONFIRM = "on_step_confirm"
 
     _WIRE_MAP: dict[str, str] = {
         PRE_TOOL: EventType.TOOL_CALL,
@@ -48,6 +51,9 @@ class HookEvent:
         ON_MESSAGE: EventType.AGENT_MESSAGE,
         ON_SESSION_START: EventType.SESSION_START,
         ON_SESSION_END: EventType.SESSION_END,
+        ON_PLAN_QA: EventType.PLAN_QA_START,
+        ON_PLAN_RECYCLE: EventType.PLAN_RECYCLED,
+        ON_STEP_CONFIRM: EventType.STEP_AWAITING_CONFIRMATION,
         # ON_ERROR has no dedicated wire event — triggered by HookManager on error detection
     }
 

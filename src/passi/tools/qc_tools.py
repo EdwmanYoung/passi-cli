@@ -1,4 +1,4 @@
-"""QC & preprocessing tools for omics data quality assessment."""
+﻿"""QC & preprocessing tools for omics data quality assessment."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class QcReportParams(BaseModel):
     data_path: str = Field(..., description="Path to the data file to QC")
     domain: str | None = Field(default=None, description="Omics domain (auto-detected if empty)")
     group_col: str | None = Field(default=None, description="Column name for sample grouping")
-    output_dir: str = Field(default="./output", description="Directory for QC report output")
+    output_dir: str = Field(default="./result", description="Directory for QC report output")
 
 
 class QcReportTool(CallableTool[QcReportParams]):
@@ -67,7 +67,7 @@ class QcReportTool(CallableTool[QcReportParams]):
             "shape": {"rows": int(df.shape[0]), "columns": int(df.shape[1])},
         }
 
-        # ── Missing values ──
+        # 鈹€鈹€ Missing values 鈹€鈹€
         missing = df.isnull().sum()
         total_missing = int(missing.sum())
         metrics["missing"] = {
@@ -76,7 +76,7 @@ class QcReportTool(CallableTool[QcReportParams]):
             "columns_with_missing": int((missing > 0).sum()),
         }
 
-        # ── Numeric columns summary ──
+        # 鈹€鈹€ Numeric columns summary 鈹€鈹€
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         if numeric_cols:
             numeric_df = df[numeric_cols]
@@ -88,7 +88,7 @@ class QcReportTool(CallableTool[QcReportParams]):
                 "max": round(float(numeric_df.max().max()), 4),
             }
 
-        # ── Low-count genes (for RNA-seq count matrices) ──
+        # 鈹€鈹€ Low-count genes (for RNA-seq count matrices) 鈹€鈹€
         if len(numeric_cols) > 5 and params.domain in (None, "transcriptomics"):
             row_means = df[numeric_cols].mean(axis=1)
             low_count_mask = row_means < 10
@@ -98,7 +98,7 @@ class QcReportTool(CallableTool[QcReportParams]):
                 "percent": round(float(low_count_mask.mean()) * 100, 2),
             }
 
-        # ── Sample correlation PCA (batch effect detection) ──
+        # 鈹€鈹€ Sample correlation PCA (batch effect detection) 鈹€鈹€
         if len(numeric_cols) >= 4:
             try:
                 from sklearn.decomposition import PCA
@@ -114,14 +114,14 @@ class QcReportTool(CallableTool[QcReportParams]):
                     ],
                 }
             except Exception:
-                metrics["pca"] = {"error": "PCA computation failed — check numeric columns"}
+                metrics["pca"] = {"error": "PCA computation failed 鈥?check numeric columns"}
 
-        # ── Group comparison ──
+        # 鈹€鈹€ Group comparison 鈹€鈹€
         if params.group_col and params.group_col in df.columns:
             groups = df[params.group_col].value_counts().to_dict()
             metrics["groups"] = {str(k): int(v) for k, v in groups.items()}
 
-        # ── Recommendations ──
+        # 鈹€鈹€ Recommendations 鈹€鈹€
         recommendations = []
         if metrics["missing"]["total"] > 0:
             pct = metrics["missing"]["percent"]

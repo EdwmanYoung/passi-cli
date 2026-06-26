@@ -33,6 +33,10 @@ class SessionMeta(BaseModel):
     message_count: int = 0
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Result tracking
+    result_id: str = ""  # unique ID for this analysis run's result directory
+    # Plan Q&A
+    qa_transcript: list[dict[str, Any]] = Field(default_factory=list)  # Q&A pairs from plan QA phase
 
 
 class SessionManager:
@@ -50,6 +54,7 @@ class SessionManager:
         """Create a new analysis session."""
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         session_id = session_id or f"session_{ts}"
+        result_id = f"result_{ts}"
         session_dir = self._sessions_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -57,6 +62,7 @@ class SessionManager:
             session_id=session_id,
             domain=domain,
             description=description,
+            result_id=result_id,
         )
         self._write_meta(session_dir, meta)
         self._active_session = meta

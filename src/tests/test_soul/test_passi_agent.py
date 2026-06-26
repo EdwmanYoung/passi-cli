@@ -322,9 +322,9 @@ class TestPassiAgentContextCompaction:
         """When context exceeds warning threshold, older messages are compacted."""
         runtime = _make_runtime(tmp_path)
 
-        # Fill context with many messages to exceed token threshold
-        large_payload = "x" * 50000  # ~16K tokens worth of chars
-        for i in range(10):
+        # Fill context with many messages to exceed 200k token threshold
+        large_payload = "x" * 50000  # ~16.6K tokens worth of chars per message
+        for i in range(15):
             runtime.context.add_message("user" if i % 2 == 0 else "assistant", large_payload)
 
         assert runtime.context.needs_compaction() is True
@@ -342,7 +342,7 @@ class TestPassiAgentContextCompaction:
             runtime.context.add_message("user" if i % 2 == 0 else "assistant", "x" * 10000)
 
         before = runtime.context.message_count
-        runtime.context.compact()
+        await runtime.context.compact()
         after = runtime.context.message_count
         assert after < before
 

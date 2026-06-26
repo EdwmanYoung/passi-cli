@@ -1,4 +1,4 @@
-"""Transcriptomics analysis tools — differential expression, GSEA, WGCNA.
+﻿"""Transcriptomics analysis tools 鈥?differential expression, GSEA, WGCNA.
 
 DESeq2 / edgeR / limma wrappers execute R code via rpy2 bridge.
 """
@@ -15,10 +15,8 @@ from passi.tools.base import CallableTool
 
 logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════════════════════════
-# R code templates
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# R code templates
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 DESEQ2_SCRIPT = r"""
 suppressMessages(library(DESeq2))
 
@@ -118,23 +116,21 @@ METHOD_SCRIPTS = {
 }
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Tool
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# Tool
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class DifferentialAnalysisParams(BaseModel):
     """Parameters for differential expression analysis."""
 
-    counts_path: str = Field(..., description="Path to count matrix (TSV, genes × samples)")
-    metadata_path: str = Field(..., description="Path to sample metadata (TSV, samples × columns)")
+    counts_path: str = Field(..., description="Path to count matrix (TSV, genes 脳 samples)")
+    metadata_path: str = Field(..., description="Path to sample metadata (TSV, samples 脳 columns)")
     group_col: str = Field(..., description="Column name in metadata for group comparison")
     method: str = Field(
         default="deseq2",
         description="Method: 'deseq2' (count data), 'edger' (count data), or 'limma' (normalized data)",
     )
     alpha: float = Field(default=0.05, description="Significance threshold (FDR)")
-    output_dir: str = Field(default="./output", description="Output directory for results")
+    output_dir: str = Field(default="./result", description="Output directory for results")
 
 
 class DifferentialAnalysisTool(CallableTool[DifferentialAnalysisParams]):

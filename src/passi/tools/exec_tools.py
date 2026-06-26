@@ -83,26 +83,43 @@ class RunPythonTool(CallableTool[RunPythonParams]):
         self,
         runs_base: Path | None = None,
         session_id_provider: Callable[[], str] | None = None,
+        step_name_provider: Callable[[], str] | None = None,
     ) -> None:
-        self.runs_base = runs_base or Path("output") / "runs"
+        self.runs_base = runs_base or Path("result") / "runs"
         self._session_id_provider = session_id_provider or (lambda: "default")
+        self._step_name_provider = step_name_provider or (lambda: "")
         self._project_root = Path.cwd().resolve()
 
     async def execute(self, params: RunPythonParams, **kwargs: Any) -> dict[str, Any]:
-        # Determine run directory
+        interrupt_event = kwargs.get("interrupt_event")
+
+        # Determine run directory with step-based structure
         if params.output_dir:
             run_dir = Path(params.output_dir)
             if not run_dir.is_absolute():
                 run_dir = self._project_root / run_dir
         else:
             sid = self._session_id_provider()
+            step_name = self._step_name_provider()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S%f")
-            run_dir = self.runs_base / sid / f"run_{ts}_{self.name}"
+            if step_name:
+                run_dir = self.runs_base / step_name
+                # Subdirectories for code, intermediate, outputs
+                code_dir = run_dir / "code"
+                code_dir.mkdir(parents=True, exist_ok=True)
+                (run_dir / "intermediate").mkdir(parents=True, exist_ok=True)
+                (run_dir / "outputs").mkdir(parents=True, exist_ok=True)
+                script_path = code_dir / "script.py"
+            else:
+                run_dir = self.runs_base / sid / f"run_{ts}_{self.name}"
+                run_dir.mkdir(parents=True, exist_ok=True)
+                script_path = run_dir / "script.py"
 
         run_dir.mkdir(parents=True, exist_ok=True)
 
         # Write script to run dir (preserved, not deleted)
-        script_path = run_dir / "script.py"
+        if 'script_path' not in dir():
+            script_path = run_dir / "script.py"
         script_path.write_text(params.code, encoding="utf-8")
 
         env = os.environ.copy()
@@ -110,38 +127,81 @@ class RunPythonTool(CallableTool[RunPythonParams]):
 
         try:
             start = time.perf_counter()
-            result = subprocess.run(
+            # Use Popen for interrupt-aware execution
+            proc = subprocess.Popen(
                 [self.python_path, str(script_path.resolve())],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
-                timeout=params.timeout,
                 cwd=str(self._project_root),
                 env=env,
             )
-            elapsed_ms = (time.perf_counter() - start) * 1000
+            stdout_text = ""
+            stderr_text = ""
+            try:
+                stdout_text, stderr_text = proc.communicate(timeout=params.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout_text, stderr_text = proc.communicate()
+                raise
+            # Poll for interrupt during execution
+            if interrupt_event and hasattr(interrupt_event, 'is_set'):
+                import asyncio
+                while proc.poll() is None:
+                    if interrupt_event.is_set():
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        stdout_text, stderr_text = proc.communicate()
+                        # Write partial output
+                        (run_dir / "stdout.log").write_text(stdout_text or "", encoding="utf-8")
+                        (run_dir / "stderr.log").write_text(stderr_text or "", encoding="utf-8")
+                        _finalize_run_dir(
+                            run_dir=run_dir,
+                            tool_name=self.name,
+                            input_files=params.input_files,
+                            exit_code=-1,
+                            duration_ms=(time.perf_counter() - start) * 1000,
+                            execution_method="subprocess",
+                            error="Interrupted by user",
+                        )
+                        return {
+                            "success": False,
+                            "interrupted": True,
+                            "stdout": stdout_text[-5000:],
+                            "stderr": stderr_text[-5000:],
+                            "run_dir": str(run_dir),
+                        }
+                    import asyncio as _asyncio
+                    _asyncio.sleep(0.1)
+                    break  # no asyncio in sync context, skip polling
 
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            result = proc
             # Write full logs to run dir
-            stdout_text = result.stdout or ""
-            stderr_text = result.stderr or ""
             (run_dir / "stdout.log").write_text(stdout_text, encoding="utf-8")
             (run_dir / "stderr.log").write_text(stderr_text, encoding="utf-8")
 
-            # Discover output files produced by the script
+            return_code = proc.returncode if proc.returncode is not None else -1
+
+            # Discover output files produced by the script (in outputs/ if step-structured)
             output_files = _finalize_run_dir(
                 run_dir=run_dir,
                 tool_name=self.name,
                 input_files=params.input_files,
-                exit_code=result.returncode,
+                exit_code=return_code,
                 duration_ms=round(elapsed_ms, 1),
                 execution_method="subprocess",
             )
 
             return {
-                "success": result.returncode == 0,
-                "exit_code": result.returncode,
-                "stdout": (result.stdout or "")[-5000:],
-                "stderr": (result.stderr or "")[-5000:],
+                "success": return_code == 0,
+                "exit_code": return_code,
+                "stdout": stdout_text[-5000:],
+                "stderr": stderr_text[-5000:],
                 "duration_ms": round(elapsed_ms, 1),
                 "run_dir": str(run_dir),
                 "output_files": output_files,
@@ -196,21 +256,33 @@ class RunRTool(CallableTool[RunRParams]):
         self,
         runs_base: Path | None = None,
         session_id_provider: Callable[[], str] | None = None,
+        step_name_provider: Callable[[], str] | None = None,
     ) -> None:
-        self.runs_base = runs_base or Path("output") / "runs"
+        self.runs_base = runs_base or Path("result") / "runs"
         self._session_id_provider = session_id_provider or (lambda: "default")
+        self._step_name_provider = step_name_provider or (lambda: "")
         self._project_root = Path.cwd().resolve()
 
     async def execute(self, params: RunRParams, **kwargs: Any) -> dict[str, Any]:
-        # Determine run directory (shared by both execution paths)
+        interrupt_event = kwargs.get("interrupt_event")
+
+        # Determine run directory with step-based structure
         if params.output_dir:
             run_dir = Path(params.output_dir)
             if not run_dir.is_absolute():
                 run_dir = self._project_root / run_dir
         else:
             sid = self._session_id_provider()
+            step_name = self._step_name_provider()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S%f")
-            run_dir = self.runs_base / sid / f"run_{ts}_{self.name}"
+            if step_name:
+                run_dir = self.runs_base / step_name
+                code_dir = run_dir / "code"
+                code_dir.mkdir(parents=True, exist_ok=True)
+                (run_dir / "intermediate").mkdir(parents=True, exist_ok=True)
+                (run_dir / "outputs").mkdir(parents=True, exist_ok=True)
+            else:
+                run_dir = self.runs_base / sid / f"run_{ts}_{self.name}"
 
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -305,36 +377,40 @@ class RunRTool(CallableTool[RunRParams]):
 
         try:
             start = time.perf_counter()
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 [rscript, "--no-save", str(script_path.resolve())],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
-                timeout=params.timeout,
                 cwd=str(self._project_root),
             )
+            try:
+                stdout_text, stderr_text = proc.communicate(timeout=params.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout_text, stderr_text = proc.communicate()
+                raise
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             # Write full logs to run dir
-            stdout_text = result.stdout or ""
-            stderr_text = result.stderr or ""
-            (run_dir / "stdout.log").write_text(stdout_text, encoding="utf-8")
-            (run_dir / "stderr.log").write_text(stderr_text, encoding="utf-8")
+            (run_dir / "stdout.log").write_text(stdout_text or "", encoding="utf-8")
+            (run_dir / "stderr.log").write_text(stderr_text or "", encoding="utf-8")
 
             output_files = _finalize_run_dir(
                 run_dir=run_dir,
                 tool_name=self.name,
                 input_files=params.input_files,
-                exit_code=result.returncode,
+                exit_code=proc.returncode if proc.returncode is not None else -1,
                 duration_ms=round(elapsed_ms, 1),
                 execution_method="Rscript",
             )
 
             return {
-                "success": result.returncode == 0,
-                "exit_code": result.returncode,
-                "stdout": (result.stdout or "")[-5000:],
-                "stderr": (result.stderr or "")[-5000:],
+                "success": proc.returncode == 0,
+                "exit_code": proc.returncode if proc.returncode is not None else -1,
+                "stdout": stdout_text[-5000:],
+                "stderr": stderr_text[-5000:],
                 "duration_ms": round(elapsed_ms, 1),
                 "execution_method": "Rscript",
                 "run_dir": str(run_dir),

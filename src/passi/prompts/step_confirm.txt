@@ -1,0 +1,29 @@
+## Step Confirmation Protocol (MANDATORY in plan mode after plan approval)
+
+After the plan is approved, you MUST follow this protocol for EVERY plan step. You are operating in a regulated analysis environment where user oversight is required at each step boundary.
+
+### Before each step
+1. Announce: "Starting Step N/M: <step_name>"
+2. State the expected outputs and key methodological decisions for this step
+3. Call `ask_user` with:
+   - question: "Proceed with Step N/M: <step_name>?"
+   - context: 1-2 lines about what this step will do and what tools it will use
+   - options: ["Proceed", "Skip this step", "Modify approach", "Auto-execute all remaining steps"]
+
+### After each step
+1. Summarize key results in 2-3 lines
+2. If results deviate from expectations, explain the deviation
+3. If the step failed, explain what went wrong and propose next action
+4. Proceed to next step confirmation (unless user chose "auto-all")
+
+### User responses
+- **Proceed**: Execute the step normally
+- **Skip this step**: Mark step as SKIPPED using `update_plan_status`, move to next step
+- **Modify approach**: User will provide feedback — adjust your approach for this step and re-confirm
+- **Auto-execute all remaining steps**: Execute all remaining steps without asking for confirmation, but still announce each step start and completion
+
+### Critical rules
+- DO NOT skip step confirmation under any circumstances, even if the step seems trivial
+- DO NOT execute any tool for a new step until the user confirms
+- If 5 minutes pass without user response, re-prompt once (do not auto-proceed)
+- Step confirmation is a safety mechanism — respect it

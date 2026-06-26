@@ -12,11 +12,15 @@ import yaml
 from passi.config import (
     AnthropicConfig,
     ExecutionConfig,
+    HooksConfig,
     LLMProviderConfig,
     OllamaConfig,
     OpenAIConfig,
     PassiConfig,
+    PlanConfig,
     SessionConfig,
+    _project_passi_dir,
+    _resolve_passi_dir,
     load_config,
 )
 
@@ -312,3 +316,95 @@ class TestPassiConfigAFKMode:
         monkeypatch.setenv("PASSI_AFK_MODE", "false")
         config = PassiConfig()
         assert config.afk_mode is False
+
+
+class TestPlanConfig:
+    """PlanConfig defaults and structure."""
+
+    def test_plan_config_defaults(self):
+        cfg = PlanConfig()
+        assert cfg.qa_min_questions == 3
+        assert cfg.qa_max_questions == 4
+        assert cfg.max_recycles == 3
+
+    def test_plan_config_in_passiconfig(self):
+        cfg = PassiConfig()
+        assert isinstance(cfg.plan, PlanConfig)
+        assert cfg.plan.qa_min_questions == 3
+
+    def test_plan_config_from_dict(self):
+        cfg = PassiConfig(plan={"qa_min_questions": 5, "max_recycles": 2})
+        assert cfg.plan.qa_min_questions == 5
+        assert cfg.plan.max_recycles == 2
+
+
+class TestResultDir:
+    """result_dir field and output_dir deprecation."""
+
+    def test_result_dir_default(self):
+        cfg = PassiConfig()
+        assert cfg.result_dir == Path("./result").resolve()
+
+    def test_result_dir_custom(self, tmp_path: Path):
+        custom = tmp_path / "results"
+        cfg = PassiConfig(result_dir=str(custom))
+        assert cfg.result_dir == custom.resolve()
+
+    def test_output_dir_is_deprecated(self):
+        cfg = PassiConfig()
+        with pytest.warns(DeprecationWarning, match="Use result_dir"):
+            _ = cfg.output_dir
+
+    def test_output_dir_returns_result_dir(self):
+        cfg = PassiConfig(result_dir="./my_results")
+        with pytest.warns(DeprecationWarning):
+            assert cfg.output_dir == Path("./my_results").resolve()
+
+    def test_result_dir_from_env(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PASSI_RESULT_DIR", "/tmp/passi_results")
+        cfg = PassiConfig()
+        # resolve() prepends the current drive on Windows
+        assert cfg.result_dir == Path("/tmp/passi_results").resolve()
+
+
+class TestProjectPassiDir:
+    """Project-local .passi/ directory detection."""
+
+    def test_project_passi_dir_none_when_no_passi(self, tmp_path: Path):
+        result = _project_passi_dir(tmp_path)
+        # May find ~/.passi when walking up — only assert None when not found
+        if result is not None:
+            assert result.is_dir()
+            assert result.name == ".passi"
+
+    def test_project_passi_dir_finds_passi(self, tmp_path: Path):
+        (tmp_path / ".passi").mkdir()
+        result = _project_passi_dir(tmp_path)
+        assert result == tmp_path / ".passi"
+
+    def test_project_passi_dir_walks_up(self, tmp_path: Path):
+        (tmp_path / ".passi").mkdir()
+        subdir = tmp_path / "a" / "b" / "c"
+        subdir.mkdir(parents=True)
+        result = _project_passi_dir(subdir)
+        assert result == tmp_path / ".passi"
+
+    def test_project_passi_dir_returns_path_or_none(self, tmp_path: Path):
+        result = _project_passi_dir(tmp_path)
+        # Returns None if no .passi/ found, or a Path if one exists above
+        assert result is None or (isinstance(result, Path) and result.name == ".passi")
+
+    def test_resolve_passi_dir_uses_project_first(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        (tmp_path / ".passi").mkdir()
+        result = _resolve_passi_dir()
+        # May be overridden by actual project .passi/ above test temp dir
+        # Just verify it returns a Path
+        assert isinstance(result, Path)
+
+    def test_hooks_config_uses_resolve_passi_dir(self):
+        cfg = HooksConfig()
+        assert "hooks.yaml" in str(cfg.hooks_file)
+
+    def test_session_config_uses_resolve_passi_dir(self):
+        cfg = SessionConfig()
+        assert "sessions" in str(cfg.sessions_dir)

@@ -1,4 +1,4 @@
-"""Clinical statistics tools — survival analysis, Cox regression, competing risks.
+﻿"""Clinical statistics tools 鈥?survival analysis, Cox regression, competing risks.
 
 Kaplan-Meier, Cox PH, and Fine-Gray competing risks via R's survival package.
 """
@@ -15,10 +15,8 @@ from passi.tools.base import CallableTool
 
 logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════════════════════════
-# R code templates
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# R code templates
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 KM_SURVFIT_SCRIPT = r"""
 suppressMessages(library(survival))
 suppressMessages(library(jsonlite))
@@ -142,10 +140,8 @@ result <- list(
 writeLines(toJSON(result, auto_unbox = TRUE, pretty = TRUE), "{output_json}")
 """
 
-# ═══════════════════════════════════════════════════════════════════
-# Tool definitions
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# Tool definitions
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class SurvivalAnalysisParams(BaseModel):
     """Parameters for survival analysis."""
@@ -165,7 +161,7 @@ class SurvivalAnalysisParams(BaseModel):
         default="km",
         description="Method: 'km' (Kaplan-Meier), 'cox' (Cox PH), 'competing_risks'",
     )
-    output_dir: str = Field(default="./output", description="Output directory for results")
+    output_dir: str = Field(default="./result", description="Output directory for results")
 
 
 class SurvivalAnalysisTool(CallableTool[SurvivalAnalysisParams]):
@@ -335,7 +331,7 @@ class SurvivalAnalysisTool(CallableTool[SurvivalAnalysisParams]):
         if not result.get("details") and not any(
             k in result for k in ("n", "logrank_p", "concordance", "events_primary")
         ):
-            result["warning"] = "No output data produced — check stderr"
+            result["warning"] = "No output data produced 鈥?check stderr"
             result["stderr"] = stderr[-2000:]
 
         return result

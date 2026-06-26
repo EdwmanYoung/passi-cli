@@ -3,11 +3,12 @@
 Loads settings from environment variables, .env files, and config files.
 Config priority (lowest to highest):
   1. Code defaults
-  2. ~/.passi/settings.yaml (user-global)
-  3. CLI --config YAML/JSON file
+  2. ~/.passi/settings.yaml (user-global baseline)
+  3. Project .passi/settings.yaml (overrides user-global)
   4. CWD .env file (project-specific)
-  5. PASSI_* environment variables
-  6. PASSI_CONFIG JSON env override
+  5. CLI --config YAML/JSON file (explicit, overrides .env)
+  6. PASSI_* environment variables
+  7. PASSI_CONFIG JSON env override
 """
 
 from __future__ import annotations
@@ -29,21 +30,73 @@ def _passi_home() -> Path:
     return Path.home() / ".passi"
 
 
-SETTINGS_TEMPLATE = """\
-# PassiAgent — User Settings
-# Location: ~/.passi/settings.yaml
-# CWD .env files and PASSI_* environment variables override these settings.
+def _project_passi_dir(start: Path | None = None) -> Path | None:
+    """Walk up from `start` (default: CWD) to find the nearest `.passi/` directory.
 
+    Returns the `.passi/` directory path if found, None otherwise.
+    Stops at the filesystem root.
+    """
+    current = (start or Path.cwd()).resolve()
+    root = current.anchor  # e.g. "C:\\" or "/"
+    while str(current) != root:
+        candidate = current / ".passi"
+        if candidate.is_dir():
+            return candidate
+        current = current.parent
+    # Check root
+    candidate = Path(root) / ".passi"
+    return candidate if candidate.is_dir() else None
+
+
+def _resolve_passi_dir() -> Path:
+    """Return the active passi config directory.
+
+    Priority: project `.passi/` > `~/.passi/`.
+    Creates `~/.passi/` as fallback if neither exists.
+    """
+    project = _project_passi_dir()
+    if project is not None:
+        return project
+    return _passi_home()
+
+
+SETTINGS_TEMPLATE = """\
+# =============================================================================
+#  PassiAgent — User Settings
+# =============================================================================
+#  Location: ~/.passi/settings.yaml (global) or <project>/.passi/settings.yaml
+#  Project .passi/settings.yaml takes precedence over the global one.
+#
+#  Override order (highest wins):
+#    1. PASSI_CONFIG JSON environment variable
+#    2. PASSI_* environment variables (e.g. PASSI_ANTHROPIC__API_KEY)
+#    3. CLI --config <file> (YAML or JSON)
+#    4. CWD .env file (project-specific)
+#    5. Project .passi/settings.yaml
+#    6. ~/.passi/settings.yaml (this file, user-global)
+#    7. Code defaults
+# =============================================================================
+
+# Default LLM provider: "anthropic", "openai", or "ollama"
 default_provider: anthropic
 
 # ── LLM Providers ──────────────────────────────────────────────────────
+#  API keys can also be set via environment variables:
+#    ANTHROPIC_API_KEY, OPENAI_API_KEY
+#  Base URLs can point to compatible APIs (DeepSeek, OpenRouter, etc.)
 
 anthropic:
+  # Your API key (or set ANTHROPIC_API_KEY env var)
   api_key: ""
+  # API endpoint — defaults shown; change for proxies or compatible APIs
   base_url: https://api.deepseek.com/anthropic
+  # Model name: claude-sonnet-4-6, claude-opus-4-7, deepseek-v4-pro, etc.
   model: deepseek-v4-pro
+  # Max tokens per LLM response (not per tool-call iteration)
   max_tokens: 8192
+  # Temperature: 0.0 = deterministic, higher = more creative
   temperature: 0.0
+  # Extended thinking budget in tokens (0 = disabled)
   thinking_budget_tokens: 0
 
 openai:
@@ -54,46 +107,80 @@ openai:
   temperature: 0.0
 
 # ── Code Execution ─────────────────────────────────────────────────────
-# R is auto-detected in this order:
-#   1) Explicit r_home below
-#   2) PASSI_R_HOME / R_HOME environment variables
-#   3) Project-local ./R/ directory (recommended for rpy2)
-#   4) System R under Program Files\\R (newest version first)
+#  Controls how Python and R code are executed during analysis.
+#  R auto-detection order (when r_home is empty):
+#    1) PASSI_R_HOME / R_HOME environment variables
+#    2) Project-local ./R/ directory (recommended for rpy2)
+#    3) System R under Program Files\\R (newest version first)
 
 execution:
-  # Python interpreter (default: "python")
+  # Python interpreter to use.
+  #   "python"         → system default Python
+  #   "C:/path/python" → specific Python/conda environment
+  #   "python3.11"     → version-specific executable
   python_path: python
 
-  # R home directory — path to R installation root (e.g., C:/Program Files/R/R-4.4.0)
-  # Leave empty for auto-detection.
-  r_home: ""
+  # R home directory — path to the R installation root folder.
+  # Examples:
+  #   Windows: C:/Program Files/R/R-4.4.0
+  #   Linux:   /usr/lib/R
+  #   macOS:   /Library/Frameworks/R.framework/Resources
+  # Auto-detected on first run — set manually only if detection fails.
+  r_home: "$r_home_detected"
 
-  # R library path for installed packages (default: ./R-lib in project root)
-  # Leave empty to auto-create and use project-local R-lib.
+  # R library path — where R packages are installed.
+  # Defaults to .passi/R-lib/ in the project (or ~/.passi/R-lib/).
+  # This keeps project R packages isolated from system R packages.
+  # Set to a custom path if you share an R library across projects.
   r_lib_path: ""
 
-  # Use rpy2 bridge for Python-R integration (recommended)
+  # Use rpy2 bridge for Python↔R integration (recommended).
+  # When disabled, all R code runs via Rscript subprocess.
   rpy2_enabled: true
 
-  # Execution timeout in seconds
+  # Maximum time (seconds) a single code execution can run.
+  # Increase for large datasets or complex models.
   timeout_seconds: 300
 
-  # Max captured output size (bytes)
+  # Maximum captured stdout/stderr size in bytes (10 MB default).
+  # Output beyond this limit is truncated before sending to the LLM.
+  # Full logs are always preserved on disk.
   max_output_bytes: 10485760
+
+# ── Plan Mode ──────────────────────────────────────────────────────────
+#  Controls the interactive plan creation and execution workflow.
+
+plan:
+  # Minimum number of clarifying questions before plan generation (3-4)
+  qa_min_questions: 3
+  qa_max_questions: 4
+  # Maximum times a plan can be rejected and revised
+  max_recycles: 3
 """
 
 
 def _ensure_passi_home() -> Path:
-    """Create ~/.passi/ directory with sessions/ and settings template on first run.
+    """Create the active .passi/ directory with sessions/ and settings template.
 
-    Idempotent — safe to call on every startup.
+    Priority: project `.passi/` > `~/.passi/`. Idempotent — safe to call on every startup.
+    Auto-detects R installation and pre-fills the settings template.
     """
-    home = _passi_home()
-    (home / "sessions").mkdir(parents=True, exist_ok=True)
-    settings_file = home / "settings.yaml"
+    passi_dir = _resolve_passi_dir()
+    (passi_dir / "sessions").mkdir(parents=True, exist_ok=True)
+    settings_file = passi_dir / "settings.yaml"
     if not settings_file.exists():
-        settings_file.write_text(SETTINGS_TEMPLATE, encoding="utf-8")
-    return home
+        r_home = _find_r_home("")
+        r_lib = str(passi_dir / "R-lib")
+        template = SETTINGS_TEMPLATE.replace("$r_home_detected", r_home or "")
+        if r_home:
+            template = template.replace(
+                "# Auto-detected on first run — set manually only if detection fails.",
+                "# Auto-detected on first run."
+            )
+        settings_file.write_text(template, encoding="utf-8")
+        # Ensure R-lib directory exists
+        (passi_dir / "R-lib").mkdir(parents=True, exist_ok=True)
+    return passi_dir
 
 
 class LLMProviderConfig(BaseSettings):
@@ -155,8 +242,9 @@ class ExecutionConfig(BaseSettings):
     def resolve_r_lib_path(cls, v: str) -> str:
         if v:
             return str(v)
-        # Default: project-local R library
-        default = Path.cwd() / "R-lib"
+        # Default: .passi/R-lib/ in the active passi config directory
+        passi_dir = _resolve_passi_dir()
+        default = passi_dir / "R-lib"
         default.mkdir(parents=True, exist_ok=True)
         return str(default.resolve())
 
@@ -288,18 +376,26 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 class SessionConfig(BaseSettings):
     """Session management configuration."""
 
-    sessions_dir: Path = Path.home() / ".passi" / "sessions"
+    sessions_dir: Path = Field(default_factory=lambda: _resolve_passi_dir() / "sessions")
     max_sessions: int = 100
     checkpoint_interval: int = 5  # messages between auto-checkpoints
     wire_file: str = "wire.jsonl"
 
 
 class HooksConfig(BaseSettings):
-    """User hook configuration — persisted to ~/.passi/hooks.yaml."""
+    """User hook configuration — persisted to .passi/hooks.yaml."""
 
-    hooks_file: Path = Path.home() / ".passi" / "hooks.yaml"
+    hooks_file: Path = Field(default_factory=lambda: _resolve_passi_dir() / "hooks.yaml")
     enabled: bool = True  # master kill switch for all hooks
     timeout_seconds: int = 30  # per-hook execution timeout
+
+
+class PlanConfig(BaseSettings):
+    """Plan mode interaction configuration."""
+
+    qa_min_questions: int = 3  # minimum clarifying questions before plan creation
+    qa_max_questions: int = 4  # maximum clarifying questions
+    max_recycles: int = 3  # maximum plan reject/recycle iterations
 
 
 class PassiConfig(BaseSettings):
@@ -328,20 +424,34 @@ class PassiConfig(BaseSettings):
     # General
     debug: bool = False
     data_dir: Path = Path("./data")
-    output_dir: Path = Path("./output")
+    result_dir: Path = Path("./result")  # primary output directory for analysis results
 
     # Hooks
     hooks: HooksConfig = Field(default_factory=HooksConfig)
+
+    # Plan mode
+    plan: PlanConfig = Field(default_factory=PlanConfig)
 
     # Prompt templating
     prompt_template_dir: str = ""  # "" = use built-in defaults from passi/prompts/
     enable_data_format_check: bool = True  # append data format check instructions to system prompt
     afk_mode: bool = False  # AFK autonomous mode: auto-plan, auto-execute, never ask user
 
-    @field_validator("data_dir", "output_dir", mode="before")
+    @field_validator("data_dir", "result_dir", mode="before")
     @classmethod
     def resolve_path(cls, v: str | Path) -> Path:
         return Path(v).resolve()
+
+    @property
+    def output_dir(self) -> Path:
+        """Deprecated: use result_dir instead."""
+        import warnings
+        warnings.warn(
+            "PassiConfig.output_dir is deprecated. Use result_dir instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.result_dir
 
     def get_llm_config(self, provider: str | None = None) -> LLMProviderConfig:
         """Get LLM config for a specific provider."""
@@ -362,30 +472,40 @@ def load_config(config_path: str | Path | None = None) -> PassiConfig:
 
     Layers (lowest to highest):
       1. Code defaults
-      2. ~/.passi/settings.yaml (user-global)
-      3. CWD .env file (project-specific)
-      4. CLI --config YAML/JSON file (explicit, overrides .env)
-      5. PASSI_* environment variables
-      6. PASSI_CONFIG JSON env override
+      2. ~/.passi/settings.yaml (user-global baseline)
+      3. Project .passi/settings.yaml (overrides user-global)
+      4. CWD .env file (project-specific)
+      5. CLI --config YAML/JSON file (explicit, overrides .env)
+      6. PASSI_* environment variables
+      7. PASSI_CONFIG JSON env override
     """
     _ensure_passi_home()
 
     file_data: dict = {}
 
-    # Layer 2: ~/.passi/settings.yaml (lowest user override)
-    passi_settings = _passi_home() / "settings.yaml"
-    if passi_settings.exists():
-        data = yaml.safe_load(passi_settings.read_text(encoding="utf-8"))
+    # Layer 2: ~/.passi/settings.yaml (user-global baseline)
+    global_settings = _passi_home() / "settings.yaml"
+    if global_settings.exists():
+        data = yaml.safe_load(global_settings.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             file_data = _deep_merge(file_data, data)
 
-    # Layer 3: CWD .env (project-specific, overrides user-global settings)
+    # Layer 3: Project .passi/settings.yaml (overrides global)
+    project = _project_passi_dir()
+    if project is not None:
+        project_settings = project / "settings.yaml"
+        if project_settings.exists():
+            data = yaml.safe_load(project_settings.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                file_data = _deep_merge(file_data, data)
+
+    # Layer 4: CWD .env (project-specific, overrides settings files)
     cwd_env = Path.cwd() / ".env"
     if cwd_env.exists():
         env_data = _env_to_nested(cwd_env)
         file_data = _deep_merge(file_data, env_data)
 
-    # Layer 4: CLI --config YAML/JSON file (explicit, overrides .env)
+    # Layer 5: CLI --config YAML/JSON file (explicit, overrides .env)
     if config_path is not None:
         path = Path(config_path)
         if path.exists():
@@ -398,10 +518,10 @@ def load_config(config_path: str | Path | None = None) -> PassiConfig:
                 if isinstance(data, dict):
                     file_data = _deep_merge(file_data, data)
 
-    # Create config — env vars (Layer 5) override all via pydantic-settings env_prefix
+    # Create config — env vars (Layer 6) override all via pydantic-settings env_prefix
     config = PassiConfig(**file_data) if file_data else PassiConfig()
 
-    # Layer 6: PASSI_CONFIG JSON env override (highest priority)
+    # Layer 7: PASSI_CONFIG JSON env override (highest priority)
     env_override = os.environ.get("PASSI_CONFIG", "")
     if env_override:
         override = json.loads(env_override)

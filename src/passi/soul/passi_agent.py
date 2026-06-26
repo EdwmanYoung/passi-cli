@@ -6,6 +6,7 @@ domain-specific sub-agent delegation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -54,13 +55,24 @@ class PassiAgent(Soul):
         self._plan_first: bool = False  # plan-first mode (requires plan before execution)
         self._hook_manager: HookManager | None = None
 
+        # Plan interaction state
+        self._plan_qa_active: bool = False  # pre-plan Q&A phase in progress
+        self._plan_approved: bool = False  # plan has been explicitly approved
+        self._plan_recycle_count: int = 0  # number of plan reject/recycle iterations
+        self._step_confirm_mode: bool = False  # step-by-step confirmation active
+        self._auto_all: bool = False  # user chose auto-execute all remaining steps
+
+        # Interrupt support
+        self._interrupt_event: asyncio.Event = asyncio.Event()
+        self._agent_busy: bool = False  # true when agent is processing a message
+
     async def initialize(self) -> None:
         """Initialize the agent, connecting all services."""
         if self._initialized:
             return
 
         self._llm_client = self.runtime.get_llm_client()
-        self._provenance = ProvenanceTracker(self.config.output_dir)
+        self._provenance = ProvenanceTracker(self.config.result_dir)
 
         # ── Plan manager & Task tracker (must be before _create_tool_registry) ──
         session = self.runtime.session.active_session
@@ -104,17 +116,21 @@ class PassiAgent(Soul):
         self._prompt_manager = PromptManager(template_dir)
         session = self.runtime.session.active_session
         domain = session.domain if session else "multi-omics"
+        result_id = session.result_id if session else ""
         self._afk_mode = getattr(self.config, "afk_mode", False)
 
         # Derive mode from config or explicit set_mode() call
         if self._afk_mode:
             self._mode = "afk"
 
-        system_prompt = self._rebuild_system_prompt(domain)
+        system_prompt = self._rebuild_system_prompt(domain, result_id)
         self.runtime.context.set_system_prompt(system_prompt)
         self.runtime.context.set_tools(
             self._tool_registry.get_schemas(format="anthropic")
         )
+
+        # Wire LLM client to context manager for LLM-based compaction
+        self.runtime.context.set_llm_client(self._llm_client)
 
         # Emit session start
         session = self.runtime.session.active_session
@@ -188,7 +204,132 @@ class PassiAgent(Soul):
     def get_hook_manager(self) -> HookManager | None:
         return self._hook_manager
 
-    def _rebuild_system_prompt(self, domain: str) -> str:
+    def interrupt(self) -> None:
+        """Signal the agent to gracefully interrupt the current tool execution.
+
+        Sets the interrupt event that tools check during execution.
+        Does NOT kill the process — tools check the flag and return early.
+        """
+        self._interrupt_event.set()
+        logger.info("Interrupt signal sent to agent")
+
+    def clear_interrupt(self) -> None:
+        """Clear the interrupt flag before starting a new tool execution."""
+        self._interrupt_event.clear()
+
+    def set_plan_approved(self) -> None:
+        """Mark the plan as approved and enable step confirmation mode."""
+        self._plan_approved = True
+        self._step_confirm_mode = True
+        self._auto_all = False
+
+        # Emit plan approved event
+        session = self.runtime.session.active_session
+        sid = session.session_id if session else ""
+        plan = self.get_plan()
+        self.wire.emit(
+            EventType.PLAN_APPROVED,
+            {"plan_id": plan.plan_id if plan else "", "title": plan.title if plan else ""},
+            sid,
+        )
+
+        # Rebuild system prompt to include step confirmation protocol
+        session = self.runtime.session.active_session
+        domain = session.domain if session else "multi-omics"
+        result_id = session.result_id if session else ""
+        if self._initialized and self._prompt_manager is not None:
+            new_prompt = self._rebuild_system_prompt(domain, result_id)
+            self.runtime.context.set_system_prompt(new_prompt)
+
+        logger.info("Plan approved, step confirmation mode enabled")
+
+    async def recycle_plan(self, feedback: str) -> AgentMessage:
+        """Handle plan rejection by feeding feedback back to the agent.
+
+        The agent will call create_plan again with the user's feedback incorporated.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        self._plan_recycle_count += 1
+
+        # Emit plan recycled event
+        session = self.runtime.session.active_session
+        sid = session.session_id if session else ""
+        plan = self.get_plan()
+        self.wire.emit(
+            EventType.PLAN_RECYCLED,
+            {
+                "version": self._plan_recycle_count,
+                "feedback": feedback,
+                "previous_plan_id": plan.plan_id if plan else "",
+            },
+            sid,
+        )
+
+        if self._plan_recycle_count > self.config.plan.max_recycles:
+            return AgentMessage(
+                role="agent",
+                content=[
+                    {"type": "text", "text": (
+                        f"Plan has been rejected {self._plan_recycle_count} times "
+                        f"(max: {self.config.plan.max_recycles}). "
+                        "Consider switching to chat mode for more flexible interaction. "
+                        "Use /mode chat to switch."
+                    )}
+                ],
+            )
+
+        # Build recycle directive
+        recycle_msg = (
+            f"[Plan Rejection - Revision {self._plan_recycle_count}]\n"
+            f"The user rejected your plan with this feedback:\n\n"
+            f"\"{feedback}\"\n\n"
+            f"Please revise the plan based on this feedback. Revise ONLY the parts "
+            f"they mentioned. Do NOT change other aspects of the plan unless the "
+            f"feedback implies a broader change. Call create_plan again."
+        )
+
+        self.runtime.context.add_message("user", recycle_msg)
+
+        # Run one ReAct iteration to let agent call create_plan
+        assert self._llm_client is not None
+        context = self.runtime.context.get_full_context()
+        response = await self._llm_client.chat(
+            messages=context["messages"],
+            tools=context.get("tools"),
+            system=context["system"],
+            max_tokens=self.config.get_llm_config().tool_call_max_tokens,
+        )
+
+        text_parts = [b.get("text", "") for b in response["content"] if b.get("type") == "text"]
+        agent_text = " ".join(text_parts)
+
+        if agent_text:
+            self.runtime.context.add_message("assistant", agent_text)
+
+        # Handle tool calls from response (agent may call create_plan)
+        tool_calls = response.get("tool_calls") or []
+        for tc in tool_calls:
+            tool_name = tc["name"]
+            tool_input = tc.get("input", {})
+            assert self._tool_registry is not None
+            result = await self._tool_registry.execute(tool_name, tool_input)
+
+        return AgentMessage(
+            role="agent",
+            content=[{"type": "text", "text": agent_text or "Plan revised."}],
+        )
+
+    @property
+    def plan_approved(self) -> bool:
+        return self._plan_approved
+
+    @property
+    def agent_busy(self) -> bool:
+        return self._agent_busy
+
+    def _rebuild_system_prompt(self, domain: str, result_id: str = "") -> str:
         """Rebuild system prompt from current mode/skills state."""
         if self._prompt_manager is None:
             return ""
@@ -198,6 +339,9 @@ class PassiAgent(Soul):
             data_check_enabled=self.config.enable_data_format_check,
             afk_mode=self._afk_mode,
             plan_first=self._plan_first,
+            plan_qa=self._plan_qa_active,
+            step_confirm=self._step_confirm_mode,
+            result_id=result_id,
         )
 
     async def chat(
@@ -220,12 +364,19 @@ class PassiAgent(Soul):
         self.wire.emit(EventType.USER_MESSAGE, {"content": user_message}, sid)
         self.runtime.context.add_message("user", user_message)
 
+        # Set busy flag
+        self._agent_busy = True
+
         # ReAct loop
         max_iterations = 20
         final_content: list[dict] = []
         pending_question: dict[str, Any] | None = None
 
         for iteration in range(max_iterations):
+            # Check for interrupt between iterations
+            if self._interrupt_event.is_set():
+                break
+
             context = self.runtime.context.get_full_context()
             response = await self._llm_client.chat(
                 messages=context["messages"],
@@ -233,6 +384,12 @@ class PassiAgent(Soul):
                 system=context["system"],
                 max_tokens=self.config.get_llm_config().tool_call_max_tokens,
             )
+
+            # Track token usage from API for accurate compaction threshold
+            usage = response.get("usage", {})
+            input_tokens = usage.get("input_tokens", 0)
+            if input_tokens > 0:
+                self.runtime.context.update_api_tokens(input_tokens)
 
             # Handle text response
             text_parts = [b.get("text", "") for b in response["content"] if b.get("type") == "text"]
@@ -288,10 +445,51 @@ class PassiAgent(Soul):
                     sid,
                 )
 
-                # Execute tool
+                # Clear interrupt flag before execution
+                self.clear_interrupt()
+
+                # Execute tool (pass interrupt event for interrupt-aware tools)
                 start = time.perf_counter()
-                result = await self._tool_registry.execute(tool_name, tool_input)
+                try:
+                    result = await self._tool_registry.execute(
+                        tool_name, tool_input, interrupt_event=self._interrupt_event
+                    )
+                except TypeError:
+                    # Tool doesn't accept interrupt_event — execute without it
+                    result = await self._tool_registry.execute(tool_name, tool_input)
                 elapsed_ms = (time.perf_counter() - start) * 1000
+
+                # Check if interrupted
+                if result.get("interrupted"):
+                    self.wire.emit(
+                        EventType.TOOL_INTERRUPTED,
+                        {"name": tool_name, "run_dir": result.get("run_dir", "")},
+                        sid,
+                    )
+                    # Mark plan step as interrupted
+                    if self._plan_manager is not None:
+                        current = self._plan_manager.get_current_step()
+                        if current is not None:
+                            self._plan_manager.update_step_status(
+                                step_id=current.step_id,
+                                status=StepStatus.INTERRUPTED,
+                                error_message="Interrupted by user",
+                            )
+                    # Present recovery options via ask_user
+                    pending_question = {
+                        "question": (
+                            f"Tool '{tool_name}' was interrupted. "
+                            "What would you like to do?"
+                        ),
+                        "context": f"Step was interrupted after {elapsed_ms:.0f}ms",
+                        "options": [
+                            "Resume from interrupted step",
+                            "Skip this step",
+                            "Modify plan",
+                            "Abort analysis",
+                        ],
+                    }
+                    break  # break from tool execution loop
 
                 # Record provenance
                 input_files: list[str] = []
@@ -397,7 +595,7 @@ class PassiAgent(Soul):
 
             # Check for context compaction
             if self.runtime.context.needs_compaction():
-                self.runtime.context.compact()
+                await self.runtime.context.compact()
 
         # Build final message
         content = final_content if len(final_content) > 1 else final_content[0] if final_content else {"type": "text", "text": ""}
@@ -417,6 +615,7 @@ class PassiAgent(Soul):
             sid,
         )
 
+        self._agent_busy = False
         self.runtime.session.touch()
         return agent_msg
 
@@ -446,6 +645,18 @@ class PassiAgent(Soul):
                         )
         elif isinstance(result.content, str):
             yield AgentStreamEvent(type="text", content=result.content)
+
+        # Yield pending question if present (from ask_user)
+        pending = result.metadata.get("pending_question")
+        if pending:
+            yield AgentStreamEvent(
+                type="pending_question",
+                content=pending.get("question", ""),
+                metadata={
+                    "context": pending.get("context", ""),
+                    "options": pending.get("options"),
+                },
+            )
 
         yield AgentStreamEvent(type="done", content="")
 
@@ -524,20 +735,42 @@ class PassiAgent(Soul):
         registry.register(ExportResultsTool(), category="io")
 
         exec_cfg = self.config.execution
-        runs_base = self.config.output_dir / "runs"
 
         def _get_session_id() -> str:
             s = self.runtime.session.active_session
             return s.session_id if s else "default"
 
+        def _get_result_id() -> str:
+            s = self.runtime.session.active_session
+            return s.result_id if s else "result_default"
+
+        def _get_step_name() -> str:
+            """Get the current plan step name for result directory structure."""
+            if self._plan_manager is not None:
+                step = self._plan_manager.get_current_step()
+                if step is not None:
+                    return step.step_id
+            return ""
+
+        result_id = _get_result_id()
+        runs_base = self.config.result_dir / result_id
+
         # Execution tools
         from passi.tools.exec_tools import RunPythonTool, RunRTool
 
-        run_python = RunPythonTool(runs_base=runs_base, session_id_provider=_get_session_id)
+        run_python = RunPythonTool(
+            runs_base=runs_base,
+            session_id_provider=_get_session_id,
+            step_name_provider=_get_step_name,
+        )
         run_python.python_path = exec_cfg.python_path or "python"
         registry.register(run_python, category="exec")
 
-        run_r = RunRTool(runs_base=runs_base, session_id_provider=_get_session_id)
+        run_r = RunRTool(
+            runs_base=runs_base,
+            session_id_provider=_get_session_id,
+            step_name_provider=_get_step_name,
+        )
         run_r.r_home = exec_cfg.r_home or ""
         run_r.r_lib_path = exec_cfg.r_lib_path or ""
         run_r.r_path = exec_cfg.rscript_binary

@@ -1,0 +1,19 @@
+You are compacting a long conversation for context window management.
+
+Below is the conversation history that needs to be summarized. Produce a concise but comprehensive summary that preserves:
+
+1. **Analysis Goal**: What the user is trying to accomplish
+2. **Data Characteristics**: Key facts about the dataset (dimensions, types, quality issues found)
+3. **Key Decisions**: Method choices made and why (e.g., "chose DESeq2 over edgeR because...")
+4. **Intermediate Results**: Critical numerical findings (p-values, effect sizes, DEG counts, pathway hits)
+5. **Current State**: Which plan step is active, what has been completed, what remains
+6. **Files/Paths**: Important file paths created or referenced
+
+Format your summary as a structured analysis state that will replace the full conversation. The agent reading this summary must be able to continue the analysis without losing context.
+
+Do NOT:
+- Summarize tool call mechanics (stdout, exit codes) — only the meaningful outputs
+- Repeat redundant information
+- Include pleasantries or conversational filler
+
+Conversation to compact:

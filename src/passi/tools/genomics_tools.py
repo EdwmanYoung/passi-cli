@@ -1,4 +1,4 @@
-"""Genomics analysis tools — VCF statistics, GWAS, variant analysis.
+﻿"""Genomics analysis tools 鈥?VCF statistics, GWAS, variant analysis.
 
 Handles variant call files (VCF), PLINK genotype data, and GWAS association
 testing. Uses Python (statsmodels/scipy) with optional PLINK subprocess support.
@@ -18,16 +18,14 @@ from passi.tools.base import CallableTool
 logger = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Tool 1: VCF Statistics
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# Tool 1: VCF Statistics
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class VcfStatsParams(BaseModel):
     """Parameters for VCF statistics extraction."""
 
     vcf_path: str = Field(..., description="Path to VCF file (.vcf, .vcf.gz)")
-    output_dir: str = Field(default="./output", description="Output directory")
+    output_dir: str = Field(default="./result", description="Output directory")
 
 
 class VcfStatsTool(CallableTool[VcfStatsParams]):
@@ -154,10 +152,8 @@ class VcfStatsTool(CallableTool[VcfStatsParams]):
             return {"success": False, "error": f"VCF parsing failed: {e}"}
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Tool 2: GWAS Analysis (Python-based, no PLINK dependency)
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# Tool 2: GWAS Analysis (Python-based, no PLINK dependency)
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class GwasAnalysisParams(BaseModel):
     """Parameters for GWAS association analysis."""
@@ -168,7 +164,7 @@ class GwasAnalysisParams(BaseModel):
     covariates: str = Field(default="", description="Comma-separated covariate column names")
     model: str = Field(default="additive", description="Genetic model: additive, dominant, recessive")
     maf_threshold: float = Field(default=0.05, description="Minor allele frequency filter threshold")
-    output_dir: str = Field(default="./output", description="Output directory for GWAS results")
+    output_dir: str = Field(default="./result", description="Output directory for GWAS results")
 
 
 class GwasAnalysisTool(CallableTool[GwasAnalysisParams]):
@@ -392,16 +388,14 @@ class GwasAnalysisTool(CallableTool[GwasAnalysisParams]):
         return None
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Tool 3: Manhattan / QQ Plot Generator
-# ═══════════════════════════════════════════════════════════════════
-
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?# Tool 3: Manhattan / QQ Plot Generator
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class ManhattanPlotParams(BaseModel):
     """Parameters for Manhattan/QQ plot generation."""
 
     gwas_result_path: str = Field(..., description="Path to GWAS results (TSV with chrom, pos, p_value columns)")
-    output_dir: str = Field(default="./output", description="Output directory for plots")
+    output_dir: str = Field(default="./result", description="Output directory for plots")
     title: str = Field(default="GWAS Manhattan Plot", description="Plot title")
 
 
@@ -440,7 +434,7 @@ class ManhattanPlotTool(CallableTool[ManhattanPlotParams]):
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
         except ImportError:
-            return {"success": True, "message": "matplotlib not available — plot skipped", "skipped": True}
+            return {"success": True, "message": "matplotlib not available 鈥?plot skipped", "skipped": True}
 
         df = df.dropna(subset=["p_value"])
         df["neg_log10_p"] = -np.log10(df["p_value"].clip(lower=1e-300))

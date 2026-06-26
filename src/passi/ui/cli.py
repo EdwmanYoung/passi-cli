@@ -63,16 +63,21 @@ HELP_TEXT = """
 | `Ctrl+L` | Clear screen |
 | `Ctrl+D` | Exit PassiAgent (on empty input) |
 | `Alt+Enter` | Insert newline for multi-line input |
-| `Ctrl+C` | Cancel current input |
+| `Ctrl+C` | Interrupt agent (during execution) / Clear input (idle) |
 
 **Agent Modes:**
 | Command | Description |
 |---------|-------------|
-| `/mode` | Cycle mode: chat -> plan -> afk -> chat |
+| `/mode` | Cycle mode: chat → plan → afk → chat |
 | `/mode [chat|plan|afk]` | Switch to a specific mode |
 | `/plan show` | Display the current analysis plan |
 | `/plan approve` | Approve plan for execution (plan mode) |
-| `/plan reject` | Reject and request re-planning |
+| `/plan reject <feedback>` | Reject plan with feedback for revision |
+
+**Control:**
+| Command | Description |
+|---------|-------------|
+| `/interrupt` | Interrupt a running analysis task |
 
 **Skills:**
 | Command | Description |
@@ -254,14 +259,28 @@ class PassiCLI:
 
         @kb.add("c-c")
         def _(event: Any) -> None:
-            """Ctrl+C: clear current input."""
-            event.current_buffer.reset()
-            event.app.exit(result="")
+            """Ctrl+C: interrupt agent if busy, otherwise clear current input."""
+            if self.agent and self.agent.agent_busy:
+                self.agent.interrupt()
+                event.current_buffer.reset()
+                event.app.exit(result="")
+            else:
+                event.current_buffer.reset()
+                event.app.exit(result="")
 
-        # Build the prompt message function (dynamic — shows current mode)
+        # Build the prompt message function (dynamic — shows current mode and phase)
         def _message() -> HTML:
             mode = self.agent.mode if self.agent else "chat"
             label = _MODE_LABELS.get(mode, "[chat]")
+
+            # Override label for specific phases
+            if self.agent and self.agent.agent_busy:
+                label = f"[{mode}] ●"
+            elif self.agent and hasattr(self.agent, '_step_confirm_mode') and self.agent._step_confirm_mode:
+                label = f"[plan-step]"
+            elif self.agent and hasattr(self.agent, '_plan_qa_active') and self.agent._plan_qa_active:
+                label = f"[plan-qa]"
+
             return HTML(f"<prompt>{label} &gt; </prompt>")
 
         def _rprompt() -> HTML | None:
@@ -321,11 +340,16 @@ class PassiCLI:
     # ── Message Processing ─────────────────────────────────────────────
 
     async def _process_message(self, message: str) -> None:
-        """Process a user message through the agent with streaming."""
+        """Process a user message through the agent with streaming.
+
+        Handles pending_question events from ask_user tool (plan Q&A, step confirmation).
+        After answering, loops back to process the answer through the agent.
+        """
         assert self.agent is not None
 
         response_text: list[str] = []
         tool_calls_shown: set[str] = set()
+        pending_question: dict[str, Any] | None = None
 
         with Progress(
             SpinnerColumn(),
@@ -353,6 +377,12 @@ class PassiCLI:
                             progress.stop()
                             self._print_tool_call(event.tool_name or "", event.content or "")
                             progress.start()
+                    elif event.type == "pending_question":
+                        pending_question = {
+                            "question": event.content,
+                            "context": event.metadata.get("context", ""),
+                            "options": event.metadata.get("options"),
+                        }
             except Exception as e:
                 progress.stop()
                 self._print_error(f"Agent error: {e}")
@@ -360,10 +390,39 @@ class PassiCLI:
 
             progress.stop()
 
-        if not response_text and not tool_calls_shown:
+        if not response_text and not tool_calls_shown and not pending_question:
             self._print_agent("(no response)")
 
+        # Handle pending question (from ask_user in plan Q&A or step confirmation)
+        if pending_question:
+            await self._handle_pending_question(pending_question)
+
         self._print_status_bar()
+
+    async def _handle_pending_question(self, question: dict[str, Any]) -> None:
+        """Present a pending question to the user and route the answer back to the agent."""
+        q_text = question.get("question", "")
+        q_context = question.get("context", "")
+        q_options = question.get("options") or []
+
+        # Display the question
+        if q_context:
+            self._print_system(f"[dim]{q_context}[/dim]")
+        self.console.print(
+            Panel(q_text, style=SYSTEM_STYLE, title="PassiAgent asks", title_align="left")
+        )
+        if q_options:
+            self._print_system(f"Options: {', '.join(q_options)}")
+
+        # Get answer from user
+        answer = await self._get_user_input("Your answer: ")
+        if not answer.strip():
+            answer = "(no answer)"
+
+        self._print_user(f"[response] {answer}")
+
+        # Route answer back to agent for further processing
+        await self._process_message(answer)
 
     # ── Command Handling ───────────────────────────────────────────────
 
@@ -387,6 +446,7 @@ class PassiCLI:
             "/status": self._cmd_status,
             "/config": self._cmd_config,
             "/plan": self._cmd_plan,
+            "/interrupt": self._cmd_interrupt,
             "/quit": self._cmd_quit,
             "/exit": self._cmd_quit,
         }
@@ -421,7 +481,7 @@ class PassiCLI:
             wire_path = self.runtime.session.get_session_dir() / "wire.jsonl"
             persistence = WirePersistence(wire_path)
             chatlog = persistence.export_chatlog(session.session_id)
-            export_dir = self.config.output_dir
+            export_dir = self.config.result_dir
             export_dir.mkdir(parents=True, exist_ok=True)
             report_path = export_dir / f"chatlog_{session.session_id}.md"
             report_path.write_text(chatlog, encoding="utf-8")
@@ -460,6 +520,16 @@ class PassiCLI:
             self._print_system(Markdown(f"**Formats for {domain}:**\n{text}"))
         else:
             self._print_system(f"No formats found for domain: {domain}")
+
+    async def _cmd_interrupt(self, _: str) -> None:
+        """Interrupt the currently running agent operation."""
+        if self.agent is None:
+            return
+        if self.agent.agent_busy:
+            self.agent.interrupt()
+            self._print_system("Interrupt signal sent. Waiting for agent to respond...")
+        else:
+            self._print_system("No operation in progress to interrupt.")
 
     async def _cmd_quit(self, _: str) -> None:
         self._running = False
@@ -730,7 +800,7 @@ class PassiCLI:
             table.add_row("AFK Mode", str(self.config.afk_mode))
             table.add_row("Debug", str(self.config.debug))
             table.add_row("Data Dir", str(self.config.data_dir))
-            table.add_row("Output Dir", str(self.config.output_dir))
+            table.add_row("Result Dir", str(self.config.result_dir))
             self.console.print(table)
         elif len(parts) >= 2 and parts[0] == "set":
             self._print_system("Config setting via TUI is not persisted. Use .env or settings.yaml for permanent changes.")
@@ -740,11 +810,11 @@ class PassiCLI:
     # ── Plan Commands ──────────────────────────────────────────────────
 
     async def _cmd_plan(self, arg: str) -> None:
-        """Plan management: /plan [show|approve|reject]"""
+        """Plan management: /plan [show|approve|reject [feedback]]"""
         assert self.agent is not None
         plan = self.agent.get_plan()
 
-        if arg == "show":
+        if arg == "show" or not arg:
             if plan is None:
                 self._print_system("No active plan. Start an analysis to create one.")
                 return
@@ -753,20 +823,48 @@ class PassiCLI:
             table.add_column("Status")
             table.add_column("Description")
             for step in plan.steps:
-                icon = {"pending": "○", "running": "●", "done": "✓", "failed": "✗"}.get(
-                    step.status, "?"
-                )
+                icon = {
+                    "pending": "○", "running": "●", "done": "✓",
+                    "failed": "✗", "skipped": "⏭", "awaiting_confirmation": "⏸",
+                    "interrupted": "⚠",
+                }.get(step.status, "?")
                 table.add_row(step.step_id, icon, step.description or "")
             self.console.print(table)
 
-        elif arg == "approve":
-            self._print_system("Plan approved. Agent will proceed with execution.")
-            # In plan mode, this signals to proceed
+        elif arg.startswith("approve"):
+            self.agent.set_plan_approved()
+            self._print_system(
+                "Plan approved. Step-by-step confirmation mode enabled.\n"
+                "The agent will ask for confirmation before each step."
+            )
 
-        elif arg == "reject":
-            self._print_system("Plan rejected. Describe what you'd like to change.")
+        elif arg.startswith("reject"):
+            # Extract feedback after "reject"
+            feedback = arg[len("reject"):].strip()
+            if not feedback:
+                self._print_system("Plan rejected. What would you like to change?")
+                # Prompt for feedback inline
+                feedback = await self._get_user_input("Feedback: ")
+                if not feedback:
+                    self._print_system("No feedback provided. Plan unchanged.")
+                    return
+            self._print_system(f"Plan rejected. Revising based on: \"{feedback}\"")
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=self.console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("[dim]Revising plan...[/dim]", total=None)
+                result = await self.agent.recycle_plan(feedback)
+                progress.stop()
+            if result.content:
+                for block in result.content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        self._print_agent(block["text"])
+            self._print_system("Plan revised. Use /plan show to review, then /plan approve.")
         else:
-            self._print_system("Usage: /plan [show|approve|reject]")
+            self._print_system("Usage: /plan [show|approve|reject <feedback>]")
 
     # ── Helpers ─────────────────────────────────────────────────────────
 

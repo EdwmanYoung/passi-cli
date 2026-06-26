@@ -23,15 +23,23 @@ class EventType:
     AGENT_THINKING = "agent_thinking"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    TOOL_INTERRUPTED = "tool_interrupted"
     ERROR = "error"
     SYSTEM = "system"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     CHECKPOINT = "checkpoint"
     PLAN_CREATED = "plan_created"
+    PLAN_RECYCLED = "plan_recycled"
+    PLAN_APPROVED = "plan_approved"
     PLAN_STEP_START = "plan_step_start"
     PLAN_STEP_COMPLETE = "plan_step_complete"
     PLAN_STEP_FAILED = "plan_step_failed"
+    PLAN_QA_START = "plan_qa_start"
+    PLAN_QA_QUESTION = "plan_qa_question"
+    PLAN_QA_ANSWER = "plan_qa_answer"
+    PLAN_QA_COMPLETE = "plan_qa_complete"
+    STEP_AWAITING_CONFIRMATION = "step_awaiting_confirmation"
 
 
 class WireEvent(BaseModel):

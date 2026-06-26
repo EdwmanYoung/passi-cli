@@ -51,8 +51,10 @@ class PromptManager:
         "data_check_enabled": "data_format_check",
     }
 
-    # Special template for plan-first mode
+    # Special templates for plan-first mode
     _PLAN_FIRST_TEMPLATE: ClassVar[str] = "plan_first"
+    _PLAN_QA_TEMPLATE: ClassVar[str] = "plan_qa"
+    _STEP_CONFIRM_TEMPLATE: ClassVar[str] = "step_confirm"
 
     _AVAILABLE_SKILLS: ClassVar[list[str]] = [
         "metabolomics",
@@ -83,6 +85,9 @@ class PromptManager:
         data_check_enabled: bool = True,
         afk_mode: bool = False,
         plan_first: bool = False,
+        plan_qa: bool = False,
+        step_confirm: bool = False,
+        result_id: str = "",
         **extra_vars: str,
     ) -> str:
         """Compose the full system prompt from templates.
@@ -93,12 +98,15 @@ class PromptManager:
             data_check_enabled: Include data format check instructions
             afk_mode: AFK autonomous mode (overrides plan/data_check templates)
             plan_first: Plan-first mode — agent must create plan before execution
+            plan_qa: Pre-plan Q&A mode — agent must ask clarifying questions first
+            step_confirm: Step confirmation mode — agent must confirm each step
+            result_id: Current result directory ID (e.g., "result_20260626_141530")
             **extra_vars: Additional template variables
 
         Returns:
             Composed system prompt string
         """
-        variables: dict[str, str] = {"domain": domain, **extra_vars}
+        variables: dict[str, str] = {"domain": domain, "result_dir": result_id, **extra_vars}
         parts: list[str] = []
 
         # Core templates (always included)
@@ -126,6 +134,18 @@ class PromptManager:
         # Plan-first directive (if enabled)
         if plan_first and not afk_mode:
             tmpl = self._cache.get(self._PLAN_FIRST_TEMPLATE)
+            if tmpl is not None:
+                parts.append(tmpl.safe_substitute(variables))
+
+        # Pre-plan Q&A directive (if plan QA mode is active)
+        if plan_qa and plan_first and not afk_mode:
+            tmpl = self._cache.get(self._PLAN_QA_TEMPLATE)
+            if tmpl is not None:
+                parts.append(tmpl.safe_substitute(variables))
+
+        # Step confirmation protocol (if step confirm mode is active)
+        if step_confirm and plan_first and not afk_mode:
+            tmpl = self._cache.get(self._STEP_CONFIRM_TEMPLATE)
             if tmpl is not None:
                 parts.append(tmpl.safe_substitute(variables))
 

@@ -15,4 +15,24 @@
 - Check distribution assumptions (normality, homoscedasticity) before choosing parametric vs non-parametric tests
 - Interpret all results in biological context — statistical significance alone is insufficient
 - Document all analysis steps for reproducibility; use run_dirs to preserve scripts and outputs
-- Process data in the user's working directory; create output in ./output/
+
+## Output Organization (MANDATORY)
+All analysis outputs MUST be organized under the result directory by analysis step. Use this structure for every `run_python` or `run_r` call:
+
+```
+$result_dir/
+  step_01_<name>/
+    code/           — scripts (script.py, script.R)
+    intermediate/   — intermediate data files
+    outputs/        — final tables, figures, and reports
+  step_02_<name>/
+    code/
+    intermediate/
+    outputs/
+  ...
+```
+
+- The `$result_dir` is provided in your system prompt context.
+- Every code execution should write outputs to the appropriate step's subdirectory.
+- Use descriptive filenames with version indicators (e.g., `de_results_v2.tsv`, `pca_plot_final.png`).
+- Never dump all outputs in a flat directory — always organize by step.

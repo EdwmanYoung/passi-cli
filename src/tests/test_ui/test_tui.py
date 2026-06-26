@@ -21,6 +21,7 @@ from passi.infra.runtime import Runtime
 from passi.infra.hooks import HookConfig, HookEvent, HookManager, HookType
 from passi.prompts.manager import PromptManager
 from passi.soul.passi_agent import PassiAgent
+from passi.soul.protocol import AgentMessage
 from passi.ui.cli import (
     PassiCLI,
     HELP_TEXT,
@@ -832,7 +833,12 @@ class TestPassiCLIPlanCommands:
     @pytest.mark.asyncio
     async def test_plan_reject(self, tmp_path):
         cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
-        await cli._cmd_plan("reject")
+        # Mock recycle_plan to avoid real wire.emit() and LLM calls
+        cli.agent.recycle_plan = AsyncMock(return_value=AgentMessage(
+            role="agent",
+            content=[{"type": "text", "text": "Revised plan based on feedback."}],
+        ))
+        await cli._cmd_plan("reject need more details")
         found = False
         for call_args in mock_console.print.call_args_list:
             args_text = " ".join(str(a) for a in call_args[0] if a)
@@ -850,6 +856,72 @@ class TestPassiCLIPlanCommands:
             if "Usage:" in args_text:
                 found = True
         assert found, "Should show usage"
+
+
+class TestPassiCLIInterrupt:
+    """/interrupt command and agent busy state."""
+
+    @pytest.mark.asyncio
+    async def test_interrupt_when_agent_not_busy(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        await cli._cmd_interrupt("")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if a)
+            if "No operation" in args_text:
+                found = True
+        assert found, "Should say no operation in progress"
+
+    @pytest.mark.asyncio
+    async def test_interrupt_when_agent_busy(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent._agent_busy = True
+        await cli._cmd_interrupt("")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if a)
+            if "Interrupt" in args_text:
+                found = True
+        assert found, "Should send interrupt signal"
+
+    @pytest.mark.asyncio
+    async def test_interrupt_no_agent_is_safe(self, tmp_path):
+        cli, _, _ = _make_cli_with_mocks(tmp_path, create_agent=False)
+        await cli._cmd_interrupt("")  # Should not raise
+
+
+class TestPassiCLIPlanReject:
+    """/plan reject with feedback flow."""
+
+    @pytest.mark.asyncio
+    async def test_reject_with_feedback(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent.recycle_plan = AsyncMock(return_value=AgentMessage(
+            role="agent",
+            content=[{"type": "text", "text": "Plan revised with power analysis step."}],
+        ))
+        await cli._cmd_plan("reject add power analysis")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if a)
+            if "rejected" in args_text.lower():
+                found = True
+        assert found, "Should confirm rejection with feedback"
+
+    @pytest.mark.asyncio
+    async def test_reject_shows_plan_revised(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli.agent.recycle_plan = AsyncMock(return_value=AgentMessage(
+            role="agent",
+            content=[],
+        ))
+        await cli._cmd_plan("reject use non-parametric tests")
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if a)
+            if "revised" in args_text.lower():
+                found = True
+        assert found, "Should say plan revised"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
