@@ -95,6 +95,13 @@ Key defaults: `AnthropicConfig.max_tokens=16384`, `tool_call_max_tokens=4096` (p
 
 ### Testing
 
+**TDD required for bug fixes.** When fixing a bug:
+1. Write a failing test that reproduces the bug
+2. Verify the test fails with the current code
+3. Apply the fix
+4. Verify the test passes
+5. Run the full suite
+
 - Unit tests use `FakeLLMClient` / `FakeLLMClientWithToolSequence` from `tests/fixtures/mock_llm.py` — inject via `agent._llm_client = fake_client` after construction
 - `_make_anthropic_client()` / `_make_openai_client()` in `test_llm_client.py` use `__new__` bypass + `MagicMock()` to skip real SDK init
 - Integration tests (marked `@pytest.mark.integration`) require real API keys in `.env`; skip when `_is_api_configured()` returns False
