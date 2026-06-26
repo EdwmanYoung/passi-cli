@@ -20,6 +20,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.filters import Always
 from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
 from rich.markdown import Markdown
@@ -514,7 +515,7 @@ class PassiCLI:
                 message=_message,
                 bottom_toolbar=_bottom_toolbar,
             )
-            session.default_buffer.read_only = True
+            session.default_buffer.read_only = Always()
             result: str = await session.prompt_async()
             return result
         except KeyboardInterrupt:
