@@ -475,10 +475,10 @@ class PassiAgent(Soul):
                         tool_name, tool_input, step_id=plan_step_id
                     )
 
-                # Emit tool call
+                # Emit tool call (include tool_use id for wire replay pairing)
                 self.wire.emit(
                     EventType.TOOL_CALL,
-                    {"name": tool_name, "params": tool_input},
+                    {"name": tool_name, "params": tool_input, "id": tc.get("id", "")},
                     sid,
                 )
 
@@ -585,10 +585,10 @@ class PassiAgent(Soul):
                         provenance_step_id=record.step_id,
                     )
 
-                # Emit tool result
+                # Emit tool result (include tool_use_id for wire replay pairing)
                 self.wire.emit(
                     EventType.TOOL_RESULT,
-                    {"name": tool_name, "result": result},
+                    {"name": tool_name, "result": result, "tool_use_id": tc.get("id", "")},
                     sid,
                 )
 

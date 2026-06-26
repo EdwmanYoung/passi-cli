@@ -2525,3 +2525,157 @@ class TestPassiCLIPendingQuestionEdgeCases:
         cli._process_message.assert_not_called()
         # Depth should not increase
         assert cli._pending_question_depth == 5
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Wire Replay — tool_use stripping and tool_result pairing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestStripToolUseBlocks:
+    """_strip_tool_use_blocks filters tool_use blocks from agent message content."""
+
+    def test_strip_removes_tool_use_keeps_text(self):
+        content = [
+            {"type": "text", "text": "Let me analyze this."},
+            {"type": "tool_use", "id": "call_123", "name": "read_file", "input": {}},
+            {"type": "text", "text": "Analysis complete."},
+        ]
+        result = PassiCLI._strip_tool_use_blocks(content)
+        assert len(result) == 2
+        assert all(b["type"] == "text" for b in result)
+        assert result[0]["text"] == "Let me analyze this."
+        assert result[1]["text"] == "Analysis complete."
+
+    def test_strip_only_tool_use_returns_none(self):
+        content = [
+            {"type": "tool_use", "id": "call_123", "name": "read_file", "input": {}},
+        ]
+        result = PassiCLI._strip_tool_use_blocks(content)
+        assert result is None
+
+    def test_strip_string_passes_through(self):
+        assert PassiCLI._strip_tool_use_blocks("Plain text") == "Plain text"
+
+    def test_strip_empty_list_returns_none(self):
+        assert PassiCLI._strip_tool_use_blocks([]) is None
+
+
+class TestCanPairToolResults:
+    """_can_pair_tool_results checks tool_use / tool_result ID matching."""
+
+    def test_can_pair_when_ids_match(self):
+        content = [
+            {"type": "text", "text": "Running tool."},
+            {"type": "tool_use", "id": "call_abc", "name": "read_file", "input": {}},
+            {"type": "tool_use", "id": "call_def", "name": "run_python", "input": {}},
+        ]
+        tool_results = [
+            {"tool_use_id": "call_abc", "content": "file content"},
+            {"tool_use_id": "call_def", "content": "script output"},
+        ]
+        assert PassiCLI._can_pair_tool_results(content, tool_results) is True
+
+    def test_cannot_pair_when_ids_mismatch(self):
+        content = [
+            {"type": "tool_use", "id": "call_abc", "name": "read_file", "input": {}},
+        ]
+        tool_results = [
+            {"tool_use_id": "", "content": "result without id"},  # old session
+        ]
+        assert PassiCLI._can_pair_tool_results(content, tool_results) is False
+
+    def test_can_pair_no_tool_use_blocks(self):
+        content = [{"type": "text", "text": "Just text."}]
+        tool_results = [{"tool_use_id": "", "content": "orphan result"}]
+        assert PassiCLI._can_pair_tool_results(content, tool_results) is True
+
+    def test_can_pair_string_content(self):
+        assert PassiCLI._can_pair_tool_results("Plain string", []) is True
+
+    def test_can_pair_empty_tool_results(self):
+        content = [{"type": "tool_use", "id": "call_abc", "name": "t", "input": {}}]
+        assert PassiCLI._can_pair_tool_results(content, []) is False
+
+
+class TestLoadExistingSessionWireReplay:
+    """_load_existing_session replays wire events with proper tool_result pairing."""
+
+    @pytest.mark.asyncio
+    async def test_replay_with_tool_results(self, tmp_path):
+        """Tool_result events are replayed after agent_message for proper pairing."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="test")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write wire log with TOOL_CALL, TOOL_RESULT, and AGENT_MESSAGE events
+        from passi.wire.protocol import Wire, EventType
+        w = Wire()
+        w._wire_path = session_dir / "wire.jsonl"
+        w.emit(EventType.USER_MESSAGE, {"content": "Analyze data"}, sid)
+        w.emit(EventType.TOOL_CALL, {"name": "read_file", "params": {}, "id": "call_001"}, sid)
+        w.emit(EventType.TOOL_RESULT, {"name": "read_file", "result": {"success": True}, "tool_use_id": "call_001"}, sid)
+        w.emit(EventType.AGENT_MESSAGE, {"content": [
+            {"type": "text", "text": "I have read the file. The data contains 100 rows."},
+            {"type": "tool_use", "id": "call_001", "name": "read_file", "input": {}},
+        ]}, sid)
+
+        # Replay
+        cli._resume_session_id = sid
+        cli._print_user = MagicMock()
+        cli._print_agent = MagicMock()
+        cli._print_system = MagicMock()
+        cli._print_error = MagicMock()
+        cli._repl = AsyncMock()
+
+        await cli.start()
+
+        # Verify agent message was added to context (with tool_use intact)
+        msgs = runtime.context.get_messages()
+        roles = [m["role"] for m in msgs]
+        assert "user" in roles
+        assert "assistant" in roles
+        assert "tool_results" in roles
+
+    @pytest.mark.asyncio
+    async def test_replay_old_session_without_tool_use_ids(self, tmp_path):
+        """Old wire sessions without tool_use_id fall back to stripping tool_use."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="test")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write OLD-FORMAT wire log (no tool_use_id in TOOL_RESULT)
+        from passi.wire.protocol import Wire, EventType
+        w = Wire()
+        w._wire_path = session_dir / "wire.jsonl"
+        w.emit(EventType.USER_MESSAGE, {"content": "Which comparison group?"}, sid)
+        w.emit(EventType.TOOL_CALL, {"name": "ask_user", "params": {"question": "Which?"}}, sid)
+        w.emit(EventType.TOOL_RESULT, {"name": "ask_user", "result": {"__ask_user__": True, "question": "Which?"}}, sid)
+        w.emit(EventType.AGENT_MESSAGE, {"content": [
+            {"type": "text", "text": "I need to ask a question."},
+            {"type": "tool_use", "id": "call_ask", "name": "ask_user", "input": {"question": "Which?"}},
+        ]}, sid)
+
+        cli._resume_session_id = sid
+        cli._print_user = MagicMock()
+        cli._print_agent = MagicMock()
+        cli._print_system = MagicMock()
+        cli._print_error = MagicMock()
+        cli._repl = AsyncMock()
+
+        # Should NOT crash — old session tool_use blocks are stripped
+        await cli.start()
+
+        msgs = runtime.context.get_messages()
+        # Assistant message should have text blocks only (tool_use stripped)
+        for msg in msgs:
+            if msg["role"] == "assistant":
+                if isinstance(msg["content"], list):
+                    for block in msg["content"]:
+                        assert block.get("type") != "tool_use", (
+                            "Old session tool_use blocks must be stripped"
+                        )

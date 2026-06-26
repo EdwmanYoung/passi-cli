@@ -12,6 +12,7 @@ Provides a professional bioinformatics chat interface with:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from html import escape
@@ -239,9 +240,14 @@ class PassiCLI:
             wp = WirePersistence(wire_path)
             events = wp.read_session(session_id)
             restored = 0
+            pending_tool_results: list[dict[str, Any]] = []
             for event in events:
                 try:
                     if event.type == "user_message":
+                        # Flush pending tool results before a new user turn
+                        if pending_tool_results:
+                            self.runtime.context.add_message("tool_results", pending_tool_results)
+                            pending_tool_results = []
                         content = event.data.get("content", "")
                         if content:
                             self.runtime.context.add_message("user", content)
@@ -249,16 +255,38 @@ class PassiCLI:
                             if display:
                                 self._print_user(display)
                             restored += 1
+                    elif event.type == "tool_result":
+                        result_data = event.data.get("result", {})
+                        result_text = json.dumps(result_data, ensure_ascii=False, default=str)
+                        pending_tool_results.append({
+                            "tool_use_id": event.data.get("tool_use_id", ""),
+                            "content": result_text,
+                        })
                     elif event.type == "agent_message":
                         content = event.data.get("content", "")
                         if content:
-                            self.runtime.context.add_message("assistant", content)
+                            # Check if we can properly pair tool_use blocks with tool_results.
+                            # Old wire sessions lack tool_use_id in TOOL_RESULT events.
+                            can_pair = self._can_pair_tool_results(content, pending_tool_results)
+                            if can_pair:
+                                self.runtime.context.add_message("assistant", content)
+                                if pending_tool_results:
+                                    self.runtime.context.add_message("tool_results", pending_tool_results)
+                                    pending_tool_results = []
+                            else:
+                                clean = self._strip_tool_use_blocks(content)
+                                if clean:
+                                    self.runtime.context.add_message("assistant", clean)
+                                pending_tool_results = []  # discard unpaired results
                             display = self._extract_display_text(content)
                             if display:
                                 self._print_agent(display)
                             restored += 1
                 except Exception:
                     pass
+            # Flush any remaining tool results
+            if pending_tool_results:
+                self.runtime.context.add_message("tool_results", pending_tool_results)
             self._print_system(
                 f"Session loaded: {session_id}  |  "
                 f"Domain: {meta.domain}  |  "
@@ -1188,6 +1216,38 @@ class PassiCLI:
             f"[dim]Ctrl+T: mode | Ctrl+S: save | Ctrl+L: clear | Ctrl+D: quit[/dim]"
         )
         self.console.print(bar, style=STATUS_STYLE)
+
+    @staticmethod
+    def _can_pair_tool_results(content: Any, tool_results: list[dict[str, Any]]) -> bool:
+        """Check if tool_use blocks in content can be paired with buffered tool_results.
+
+        Old wire sessions lack tool_use_id in TOOL_RESULT events, so pairing is
+        impossible. In that case we fall back to stripping tool_use blocks.
+        """
+        if not isinstance(content, list):
+            return True  # String content has no tool_use blocks
+        tool_use_ids = {
+            b["id"] for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id")
+        }
+        if not tool_use_ids:
+            return True  # No tool_use blocks — no problem
+        result_ids = {tr.get("tool_use_id", "") for tr in tool_results}
+        # Every tool_use must have a matching tool_result
+        return tool_use_ids.issubset(result_ids)
+
+    @staticmethod
+    def _strip_tool_use_blocks(content: Any) -> Any:
+        """Remove tool_use blocks from content, keeping only text blocks.
+
+        During wire replay of old sessions, tool_use blocks can't be paired with
+        tool_results, which causes Anthropic API errors. We preserve text only.
+        Returns None if no text blocks remain (caller should skip adding).
+        """
+        if isinstance(content, list):
+            text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            return text_blocks if text_blocks else None
+        return content
 
     @staticmethod
     def _extract_display_text(content: Any) -> str:
