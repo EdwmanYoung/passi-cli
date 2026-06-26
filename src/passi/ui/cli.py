@@ -316,11 +316,15 @@ class PassiCLI:
 
         await self._shutdown()
 
-    def _create_input_session(self) -> PromptSession[str]:
+    def _create_input_session(
+        self, input: Any = None, output: Any = None
+    ) -> PromptSession[str]:
         """Create a prompt_toolkit PromptSession with key bindings.
 
         Follows kimi-cli pattern: all key bindings are registered on a single
         KeyBindings object, no background threads, no stdin conflict.
+
+        input/output params allow test injection via create_pipe_input().
         """
         kb = KeyBindings()
 
@@ -392,6 +396,8 @@ class PassiCLI:
             rprompt=_rprompt,
             history=self._input_history,
             complete_while_typing=False,
+            input=input,
+            output=output,
         )
 
     async def _get_input(self) -> str:

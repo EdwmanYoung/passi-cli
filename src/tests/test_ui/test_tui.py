@@ -10,7 +10,9 @@ FakeLLMClient, then exercise command handlers directly.
 from __future__ import annotations
 
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 from unittest.mock import MagicMock, AsyncMock, patch, call
 
 import pytest
@@ -46,6 +48,31 @@ from passi.soul.protocol import AgentStreamEvent
 from passi.infra.plan import AnalysisPlan, PlanStep, StepStatus
 from passi.wire.protocol import WireEvent, EventType
 from passi.wire.persistence import WirePersistence
+
+
+# ── Pipe input helper for testing PromptSession without a real terminal ──────
+
+
+@contextmanager
+def _pipe_session() -> Iterator[tuple[object, object]]:
+    """Create a pipe input + dummy output for testing PromptSession.
+
+    Usage:
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
+            # test session.message(), key bindings, etc.
+    """
+    try:
+        from prompt_toolkit.input.defaults import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+    except ImportError:
+        pytest.skip("prompt_toolkit not installed")
+
+    try:
+        with create_pipe_input() as inp:
+            yield inp, DummyOutput()
+    except Exception:
+        pytest.skip("create_pipe_input not available on this platform")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1284,23 +1311,19 @@ class TestPassiCLIInputSessionLabels:
     async def test_label_default_chat(self, tmp_path):
         cli, _, _ = _make_cli_with_mocks(tmp_path)
         cli.agent._mode = "chat"
-        try:
-            session = cli._create_input_session()
-        except Exception:
-            pytest.skip("No real terminal available for PromptSession")
-        label = session.message()
-        assert "chat" in str(label)
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
+            label = str(session.message())
+        assert "chat" in label
 
     @pytest.mark.asyncio
     async def test_label_agent_busy_shows_dot(self, tmp_path):
         cli, _, _ = _make_cli_with_mocks(tmp_path)
         cli.agent._agent_busy = True
         cli.agent._mode = "chat"
-        try:
-            session = cli._create_input_session()
-        except Exception:
-            pytest.skip("No real terminal available for PromptSession")
-        label = str(session.message())
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
+            label = str(session.message())
         assert "●" in label
 
     @pytest.mark.asyncio
@@ -1308,11 +1331,9 @@ class TestPassiCLIInputSessionLabels:
         cli, _, _ = _make_cli_with_mocks(tmp_path)
         cli.agent._step_confirm_mode = True
         cli.agent._agent_busy = False
-        try:
-            session = cli._create_input_session()
-        except Exception:
-            pytest.skip("No real terminal available for PromptSession")
-        label = str(session.message())
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
+            label = str(session.message())
         assert "[plan-step]" in label
 
     @pytest.mark.asyncio
@@ -1321,11 +1342,9 @@ class TestPassiCLIInputSessionLabels:
         cli.agent._plan_qa_active = True
         cli.agent._agent_busy = False
         cli.agent._step_confirm_mode = False
-        try:
-            session = cli._create_input_session()
-        except Exception:
-            pytest.skip("No real terminal available for PromptSession")
-        label = str(session.message())
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
+            label = str(session.message())
         assert "[plan-qa]" in label
 
     @pytest.mark.asyncio
@@ -1335,22 +1354,20 @@ class TestPassiCLIInputSessionLabels:
         cli.agent._agent_busy = False
         cli.agent._step_confirm_mode = False
         cli.agent._plan_qa_active = False
-        try:
-            session = cli._create_input_session()
-        except Exception:
-            pytest.skip("No real terminal available for PromptSession")
-        label = str(session.message())
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
+            label = str(session.message())
         assert "[plan]" in label
 
     @pytest.mark.asyncio
     async def test_rprompt_none_when_no_skills(self, tmp_path):
         cli, _, _ = _make_cli_with_mocks(tmp_path)
-        cli._skills = []
-        try:
-            session = cli._create_input_session()
-        except Exception:
-            pytest.skip("No real terminal available for PromptSession")
-        assert session.rprompt is None
+        # Ensure agent has no active skills so rprompt returns None
+        cli.agent._prompt_manager._active_skills = []
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
+        # _rprompt is always a callable; its return value is None when no skills
+        assert session.rprompt() is None
 
 
 class TestPassiCLICtrlCKeybinding:
@@ -1358,14 +1375,14 @@ class TestPassiCLICtrlCKeybinding:
 
     @pytest.mark.asyncio
     async def test_ctrl_c_interrupts_agent_when_busy(self, tmp_path):
+        from prompt_toolkit.keys import Keys
+
         cli, _, _ = _make_cli_with_mocks(tmp_path)
         cli.agent._agent_busy = True
         cli.agent.interrupt = MagicMock()
 
-        try:
-            session = cli._create_input_session()
-        except Exception:
-            pytest.skip("No real terminal available for PromptSession")
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
 
         # Find the c-c key binding and invoke it
         mock_event = MagicMock()
@@ -1373,38 +1390,47 @@ class TestPassiCLICtrlCKeybinding:
         mock_event.current_buffer.reset = MagicMock()
         mock_event.app.exit = MagicMock()
 
-        # Get the handler from key_bindings
+        found = False
         for binding in session.key_bindings.bindings:
             for key in binding.keys:
-                if str(key) == "c-c":
+                if key == Keys.ControlC:
                     binding.handler(mock_event)
+                    found = True
                     break
+            if found:
+                break
 
+        assert found, "Ctrl+C binding not found"
         cli.agent.interrupt.assert_called_once()
         mock_event.current_buffer.reset.assert_called()
 
     @pytest.mark.asyncio
     async def test_ctrl_c_clears_input_when_idle(self, tmp_path):
+        from prompt_toolkit.keys import Keys
+
         cli, _, _ = _make_cli_with_mocks(tmp_path)
         cli.agent._agent_busy = False
         cli.agent.interrupt = MagicMock()
 
-        try:
-            session = cli._create_input_session()
-        except Exception:
-            pytest.skip("No real terminal available for PromptSession")
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
 
         mock_event = MagicMock()
         mock_event.current_buffer.text = "some text"
         mock_event.current_buffer.reset = MagicMock()
         mock_event.app.exit = MagicMock()
 
+        found = False
         for binding in session.key_bindings.bindings:
             for key in binding.keys:
-                if str(key) == "c-c":
+                if key == Keys.ControlC:
                     binding.handler(mock_event)
+                    found = True
                     break
+            if found:
+                break
 
+        assert found, "Ctrl+C binding not found"
         cli.agent.interrupt.assert_not_called()
         mock_event.current_buffer.reset.assert_called()
 
@@ -2032,24 +2058,18 @@ class TestPassiCLIInputHistory:
     def test_input_history_passed_to_prompt_session(self, tmp_path):
         """PromptSession in _create_input_session receives the history object."""
         cli, _, _ = _make_cli_with_mocks(tmp_path)
-        try:
-            session = cli._create_input_session()
-            # The session's default_buffer should have our history
+        with _pipe_session() as (inp, out):
+            session = cli._create_input_session(input=inp, output=out)
             assert session.default_buffer.history is cli._input_history
-        except Exception:
-            # Creating PromptSession may fail without terminal on some platforms
-            pytest.skip("PromptSession creation requires terminal")
 
     def test_history_is_shared_across_sessions(self, tmp_path):
         """Same history instance is reused across PromptSession creations."""
         cli, _, _ = _make_cli_with_mocks(tmp_path)
-        try:
-            s1 = cli._create_input_session()
-            s2 = cli._create_input_session()
+        with _pipe_session() as (inp, out):
+            s1 = cli._create_input_session(input=inp, output=out)
+            s2 = cli._create_input_session(input=inp, output=out)
             assert s1.default_buffer.history is s2.default_buffer.history
             assert s1.default_buffer.history is cli._input_history
-        except Exception:
-            pytest.skip("PromptSession creation requires terminal")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
