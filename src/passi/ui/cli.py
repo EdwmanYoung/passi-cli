@@ -139,8 +139,7 @@ class PassiCLI:
 
     def __init__(self, config: PassiConfig) -> None:
         self.config = config
-        self._terminal_width = self._get_terminal_size_columns()
-        self.console = Console(width=self._terminal_width)
+        self.console = Console()
         self.runtime = Runtime(config)
         self.agent: PassiAgent | None = None
         self._domain: str = "multi-omics"
@@ -150,6 +149,7 @@ class PassiCLI:
         self._resume_session_id: str | None = None
         self._input_history = InMemoryHistory()
         self._resize_task: asyncio.Task | None = None
+        self._prompt_session: PromptSession[str] | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -329,25 +329,26 @@ class PassiCLI:
             await self.agent.shutdown()
         self.console.print("\n[dim]Session ended.[/dim]")
 
-    @staticmethod
-    def _get_terminal_size_columns() -> int:
-        """Current terminal width columns, with a sensible fallback."""
-        try:
-            return shutil.get_terminal_size().columns
-        except Exception:
-            return 120
-
     async def _resize_monitor(self) -> None:
-        """Poll terminal width and keep Console in sync on resize."""
+        """Poll terminal size; force Rich and prompt_toolkit to adapt on resize."""
         while self._running:
             await asyncio.sleep(0.5)
             try:
-                current = self._get_terminal_size_columns()
+                current_columns = shutil.get_terminal_size().columns
             except Exception:
                 continue
-            if current != self._terminal_width:
-                self._terminal_width = current
-                self.console.width = current
+            if current_columns != self.console.width:
+                # Clear Rich's cached size so it re-queries the OS on every render
+                self.console._width = None
+                self.console._height = None
+                # Force prompt_toolkit to re-render the prompt layout at new width
+                try:
+                    from prompt_toolkit.application import get_app_or_none
+                    app = get_app_or_none()
+                    if app is not None:
+                        app._on_resize()
+                except Exception:
+                    pass
 
     # ── Main REPL ──────────────────────────────────────────────────────
 
@@ -490,8 +491,9 @@ class PassiCLI:
         (e.g., piped stdin, IDE terminal, test environments).
         """
         try:
-            session = self._create_input_session()
-            result = await session.prompt_async()
+            if self._prompt_session is None:
+                self._prompt_session = self._create_input_session()
+            result = await self._prompt_session.prompt_async()
             return result
         except KeyboardInterrupt:
             return ""
