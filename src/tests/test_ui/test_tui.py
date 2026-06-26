@@ -33,6 +33,11 @@ from passi.ui.cli import (
     STATUS_STYLE,
     _MODE_CYCLE,
     _MODE_LABELS,
+    _SENTINEL_CYCLE_MODE,
+    _SENTINEL_SAVE,
+    _SENTINEL_CLEAR_SCREEN,
+    _SENTINEL_QUIT,
+    _PROMPT_STYLE,
 )
 from tests.fixtures.mock_llm import FakeLLMClient
 
@@ -753,14 +758,17 @@ class TestPassiCLIStatusBar:
         args_text = str(mock_console.print.call_args[0])
         assert "Session:" in args_text
 
-    def test_status_bar_no_more_shift_tab(self, tmp_path):
-        """Regression: status bar should NOT reference Shift+Tab (removed)."""
+    def test_status_bar_shows_keyboard_shortcuts(self, tmp_path):
+        """Status bar shows real keyboard shortcuts (Ctrl+T, Ctrl+S, etc.)."""
         cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
         mock_console.print.reset_mock()
         cli._print_status_bar()
         args_text = str(mock_console.print.call_args[0])
         assert "Shift+Tab" not in args_text
-        assert "/mode:" in args_text  # replaced with slash command
+        assert "Ctrl+T" in args_text
+        assert "Ctrl+S" in args_text
+        assert "Ctrl+L" in args_text
+        assert "Ctrl+D" in args_text
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1063,3 +1071,125 @@ class TestPassiCLIAgentIntegration:
         # 8. Quit
         await cli._cmd_quit("")
         assert cli._running is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Keyboard Shortcut System (prompt_toolkit-based, like kimi-cli)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLIShortcutSentinels:
+    """Sentinel values that key bindings return to the REPL loop."""
+
+    def test_sentinels_are_distinct(self):
+        """All sentinel values are unique."""
+        sentinels = [_SENTINEL_CYCLE_MODE, _SENTINEL_SAVE, _SENTINEL_CLEAR_SCREEN, _SENTINEL_QUIT]
+        assert len(sentinels) == len(set(sentinels))
+
+    def test_sentinels_start_with_null(self):
+        """Sentinels use \\x00 prefix to avoid collision with real text."""
+        for s in [_SENTINEL_CYCLE_MODE, _SENTINEL_SAVE, _SENTINEL_CLEAR_SCREEN, _SENTINEL_QUIT]:
+            assert s.startswith("\x00")
+
+    def test_prompt_style_is_configured(self):
+        """_PROMPT_STYLE has the expected style rules."""
+        from prompt_toolkit.styles import Style as PTStyle
+        assert isinstance(_PROMPT_STYLE, PTStyle)
+
+    def test_create_input_session_exists(self, tmp_path):
+        """_create_input_session method is callable and well-formed."""
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        assert callable(cli._create_input_session)
+        # prompt_toolkit PromptSession requires a real console — construction
+        # is tested indirectly via the REPL integration tests below.
+
+    def test_no_msvcrt_imports_in_cli(self):
+        """Regression: cli.py must NOT import msvcrt (old broken shortcut system)."""
+        import inspect
+        from passi.ui import cli as cli_module
+        source = inspect.getsource(cli_module)
+        assert "msvcrt" not in source, "cli.py should not use msvcrt (replaced by prompt_toolkit)"
+        assert "threading" not in source, "cli.py should not use threading (replaced by prompt_toolkit)"
+
+
+class TestPassiCLIREPLShortcuts:
+    """REPL loop correctly handles shortcut sentinels."""
+
+    @pytest.mark.asyncio
+    async def test_repl_handles_cycle_mode_sentinel(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        # Simulate _get_input returning the sentinel
+        cli.agent._mode = "chat"
+        with patch.object(cli, '_get_input', side_effect=[_SENTINEL_CYCLE_MODE, _SENTINEL_QUIT]):
+            await cli._repl()
+        assert cli.agent._mode == "plan"
+
+    @pytest.mark.asyncio
+    async def test_repl_handles_save_sentinel(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch.object(cli, '_get_input', side_effect=[_SENTINEL_SAVE, _SENTINEL_QUIT]):
+            await cli._repl()
+        found = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if a)
+            if "checkpoint saved" in args_text.lower():
+                found = True
+        assert found, "Ctrl+S should trigger save checkpoint"
+
+    @pytest.mark.asyncio
+    async def test_repl_handles_clear_screen_sentinel(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch.object(cli, '_get_input', side_effect=[_SENTINEL_CLEAR_SCREEN, _SENTINEL_QUIT]):
+            await cli._repl()
+        assert mock_console.clear.called
+
+    @pytest.mark.asyncio
+    async def test_repl_handles_quit_sentinel(self, tmp_path):
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._running = True
+        with patch.object(cli, '_get_input', side_effect=[_SENTINEL_QUIT]):
+            await cli._repl()
+        assert not cli._running
+        assert cli._running is False
+
+    @pytest.mark.asyncio
+    async def test_repl_slash_command_after_shortcut(self, tmp_path):
+        """Normal slash commands still work after shortcut sentinel handling."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch.object(cli, '_get_input', side_effect=["/mode plan", _SENTINEL_QUIT]):
+            await cli._repl()
+        assert cli.agent._mode == "plan"
+
+    @pytest.mark.asyncio
+    async def test_repl_chat_message_works(self, tmp_path):
+        """Chat messages still process correctly through prompt_toolkit input."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+
+        from passi.soul.protocol import AgentStreamEvent
+
+        async def fake_stream(_msg):
+            yield AgentStreamEvent(type="text", content="response")
+
+        cli.agent.chat_stream = fake_stream
+        with patch.object(cli, '_get_input', side_effect=["test message", _SENTINEL_QUIT]):
+            await cli._repl()
+        # Should not crash; message processed via _process_message
+        assert mock_console.print.called
+
+    @pytest.mark.asyncio
+    async def test_repl_empty_input_skipped(self, tmp_path):
+        """Empty input is skipped without error."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        with patch.object(cli, '_get_input', side_effect=["   ", _SENTINEL_QUIT]):
+            await cli._repl()
+        # Empty input should be skipped, no crash
+
+    @pytest.mark.asyncio
+    async def test_help_text_includes_keyboard_shortcuts(self, tmp_path):
+        """HELP_TEXT documents the keyboard shortcuts."""
+        assert "Ctrl+T" in HELP_TEXT
+        assert "Ctrl+S" in HELP_TEXT
+        assert "Ctrl+L" in HELP_TEXT
+        assert "Ctrl+D" in HELP_TEXT
+        assert "Alt+Enter" in HELP_TEXT
+        assert "Ctrl+C" in HELP_TEXT

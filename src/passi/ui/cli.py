@@ -6,6 +6,7 @@ Provides a professional bioinformatics chat interface with:
 - Hook system (pre_tool, post_tool, on_error, etc.)
 - Streaming agent responses
 - Status bar with mode/skills/session info
+- Keyboard shortcuts via prompt_toolkit (Ctrl+T, Ctrl+S, Ctrl+L, Ctrl+D, Alt+Enter)
 """
 
 from __future__ import annotations
@@ -15,6 +16,10 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -22,7 +27,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Prompt
 from rich.style import Style
 from rich.table import Table
-from rich.text import Text
 
 from passi.config import PassiConfig
 from passi.infra.hooks import HookConfig, HookEvent, HookManager, HookType
@@ -51,6 +55,16 @@ WELCOME_BANNER = """
 """
 
 HELP_TEXT = """
+**Keyboard Shortcuts:**
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+T` | Cycle agent mode: chat → plan → afk → chat |
+| `Ctrl+S` | Save session checkpoint |
+| `Ctrl+L` | Clear screen |
+| `Ctrl+D` | Exit PassiAgent (on empty input) |
+| `Alt+Enter` | Insert newline for multi-line input |
+| `Ctrl+C` | Cancel current input |
+
 **Agent Modes:**
 | Command | Description |
 |---------|-------------|
@@ -93,6 +107,18 @@ HELP_TEXT = """
 
 _MODE_CYCLE = ["chat", "plan", "afk"]
 _MODE_LABELS = {"chat": "[chat]", "plan": "[plan]", "afk": "[afk]"}
+
+# Sentinel values returned by prompt_toolkit key bindings (via event.app.exit)
+_SENTINEL_CYCLE_MODE = "\x00mode"
+_SENTINEL_SAVE = "\x00save"
+_SENTINEL_CLEAR_SCREEN = "\x00clear_screen"
+_SENTINEL_QUIT = "\x00quit"
+
+# prompt_toolkit style for the input prompt
+_PROMPT_STYLE = PTStyle.from_dict({
+    "prompt": "#3B82F6 bold",
+    "rprompt": "#6B7280 italic",
+})
 
 
 class PassiCLI:
@@ -150,10 +176,27 @@ class PassiCLI:
     # ── Main REPL ──────────────────────────────────────────────────────
 
     async def _repl(self) -> None:
-        """Read-Eval-Print loop."""
+        """Read-Eval-Print loop with keyboard shortcut support."""
         while self._running:
             try:
                 user_input = await self._get_input()
+
+                # Handle keyboard shortcut sentinels (returned by prompt_toolkit key bindings)
+                if user_input == _SENTINEL_CYCLE_MODE:
+                    if self.agent:
+                        self._cycle_mode()
+                        self._print_status_bar()
+                    continue
+                elif user_input == _SENTINEL_SAVE:
+                    await self._cmd_save("")
+                    continue
+                elif user_input == _SENTINEL_CLEAR_SCREEN:
+                    self.console.clear()
+                    continue
+                elif user_input == _SENTINEL_QUIT:
+                    self._running = False
+                    continue
+
                 if not user_input.strip():
                     continue
 
@@ -173,17 +216,107 @@ class PassiCLI:
 
         await self._shutdown()
 
+    def _create_input_session(self) -> PromptSession[str]:
+        """Create a prompt_toolkit PromptSession with key bindings.
+
+        Follows kimi-cli pattern: all key bindings are registered on a single
+        KeyBindings object, no background threads, no stdin conflict.
+        """
+        kb = KeyBindings()
+
+        @kb.add("c-t", eager=True)
+        def _(event: Any) -> None:
+            """Ctrl+T: cycle agent mode (chat -> plan -> afk -> chat)."""
+            event.app.exit(result=_SENTINEL_CYCLE_MODE)
+
+        @kb.add("c-s", eager=True)
+        def _(event: Any) -> None:
+            """Ctrl+S: save session checkpoint."""
+            event.app.exit(result=_SENTINEL_SAVE)
+
+        @kb.add("c-l", eager=True)
+        def _(event: Any) -> None:
+            """Ctrl+L: clear screen."""
+            event.app.exit(result=_SENTINEL_CLEAR_SCREEN)
+
+        @kb.add("escape", "enter", eager=True)
+        def _(event: Any) -> None:
+            """Alt+Enter: insert newline for multi-line input."""
+            event.current_buffer.insert_text("\n")
+
+        @kb.add("c-d")
+        def _(event: Any) -> None:
+            """Ctrl+D: exit on empty input, otherwise delete forward."""
+            if not event.current_buffer.text:
+                event.app.exit(result=_SENTINEL_QUIT)
+            else:
+                event.current_buffer.delete()
+
+        @kb.add("c-c")
+        def _(event: Any) -> None:
+            """Ctrl+C: clear current input."""
+            event.current_buffer.reset()
+            event.app.exit(result="")
+
+        # Build the prompt message function (dynamic — shows current mode)
+        def _message() -> HTML:
+            mode = self.agent.mode if self.agent else "chat"
+            label = _MODE_LABELS.get(mode, "[chat]")
+            return HTML(f"<prompt>{label} &gt; </prompt>")
+
+        def _rprompt() -> HTML | None:
+            """Right-side prompt: active skills hint."""
+            if self.agent and self.agent.active_skills:
+                skills = ",".join(self.agent.active_skills)
+                return HTML(f"<rprompt>skills:{skills}</rprompt>")
+            return None
+
+        return PromptSession(
+            key_bindings=kb,
+            style=_PROMPT_STYLE,
+            message=_message,
+            rprompt=_rprompt,
+            complete_while_typing=False,
+        )
+
     async def _get_input(self) -> str:
-        """Get user input with mode-aware prompt styling."""
+        """Get user input via prompt_toolkit PromptSession with keyboard shortcuts.
+
+        Returns the user's text, or a sentinel string (_SENTINEL_*) if a
+        keyboard shortcut was triggered. The REPL loop dispatches sentinels
+        to the appropriate action.
+
+        Falls back to basic input() when not running in a real console
+        (e.g., piped stdin, IDE terminal, test environments).
+        """
+        try:
+            session = self._create_input_session()
+            result = await session.prompt_async()
+            return result
+        except KeyboardInterrupt:
+            return ""
+        except EOFError:
+            return _SENTINEL_QUIT
+        except Exception:
+            # Fallback for non-console environments (IDE, pipeline, test)
+            # prompt_toolkit requires a real terminal; fall back to basic input()
+            return await self._get_input_fallback()
+
+    async def _get_input_fallback(self) -> str:
+        """Basic input() fallback when prompt_toolkit is unavailable."""
         loop = asyncio.get_running_loop()
         mode = self.agent.mode if self.agent else "chat"
         label = _MODE_LABELS.get(mode, "[chat]")
-        prompt_text = Text(f"{label} > ", style=USER_STYLE)
 
-        return await loop.run_in_executor(
-            None,
-            lambda: Prompt.ask(prompt_text, console=self.console),
-        )
+        try:
+            return await loop.run_in_executor(
+                None,
+                lambda: input(f"{label} > "),
+            )
+        except KeyboardInterrupt:
+            return ""
+        except EOFError:
+            return _SENTINEL_QUIT
 
     # ── Message Processing ─────────────────────────────────────────────
 
@@ -660,7 +793,7 @@ class PassiCLI:
             f"[dim]Mode:[/dim] [bold]{mode}[/bold]  "
             f"[dim]Skills:[/dim] {skills}  "
             f"[dim]Session:[/dim] {sid}  "
-            f"[dim](/mode: cycle mode | /save: checkpoint | /clear: reset)[/dim]"
+            f"[dim]Ctrl+T: mode | Ctrl+S: save | Ctrl+L: clear | Ctrl+D: quit[/dim]"
         )
         self.console.print(bar, style=STATUS_STYLE)
 
