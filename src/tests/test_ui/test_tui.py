@@ -61,6 +61,9 @@ def _pipe_session() -> Iterator[tuple[object, object]]:
         with _pipe_session() as (inp, out):
             session = cli._create_input_session(input=inp, output=out)
             # test session.message(), key bindings, etc.
+
+    Only setup errors are caught and skipped. Assertion failures in test
+    bodies propagate normally.
     """
     try:
         from prompt_toolkit.input.defaults import create_pipe_input
@@ -68,11 +71,19 @@ def _pipe_session() -> Iterator[tuple[object, object]]:
     except ImportError:
         pytest.skip("prompt_toolkit not installed")
 
+    inp = None
     try:
-        with create_pipe_input() as inp:
-            yield inp, DummyOutput()
-    except Exception:
-        pytest.skip("create_pipe_input not available on this platform")
+        inp = create_pipe_input()
+        inp.__enter__()
+        yield inp, DummyOutput()
+    except (OSError, RuntimeError, AttributeError) as exc:
+        pytest.skip(f"Pipe input not available: {exc}")
+    finally:
+        if inp is not None:
+            try:
+                inp.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
