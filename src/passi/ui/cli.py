@@ -234,13 +234,17 @@ class PassiCLI:
                     content = event.data.get("content", "")
                     if content:
                         self.runtime.context.add_message("user", content)
-                        self._print_user(content)
+                        display = self._extract_display_text(content)
+                        if display:
+                            self._print_user(display)
                         restored += 1
                 elif event.type == "agent_message":
                     content = event.data.get("content", "")
                     if content:
                         self.runtime.context.add_message("assistant", content)
-                        self._print_agent(content)
+                        display = self._extract_display_text(content)
+                        if display:
+                            self._print_agent(display)
                         restored += 1
             self._print_system(
                 f"Session loaded: {session_id}  |  "
@@ -1132,6 +1136,16 @@ class PassiCLI:
             f"[dim]Ctrl+T: mode | Ctrl+S: save | Ctrl+L: clear | Ctrl+D: quit[/dim]"
         )
         self.console.print(bar, style=STATUS_STYLE)
+
+    @staticmethod
+    def _extract_display_text(content: Any) -> str:
+        """Extract readable text from wire content (string or LLM content blocks)."""
+        if isinstance(content, list):
+            return " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return str(content)
 
     # ── Output Renderers ────────────────────────────────────────────────
 
