@@ -461,7 +461,7 @@ class PassiAgent(Soul):
 
             # Execute tools and collect results
             tool_results: list[dict[str, Any]] = []
-            for tc in tool_calls:
+            for idx, tc in enumerate(tool_calls):
                 tool_name = tc["name"]
                 tool_input = tc.get("input", {})
 
@@ -550,6 +550,23 @@ class PassiAgent(Soul):
                             "options": pending_question["options"],
                         },
                     )
+                    # Add synthetic tool_results for interrupted and remaining
+                    # tool_use blocks to prevent orphaned tool_use in context
+                    for rtc in tool_calls[idx:]:
+                        rtc_id = rtc.get("id", "")
+                        if rtc_id:
+                            tool_results.append({
+                                "tool_use_id": rtc_id,
+                                "content": json.dumps(
+                                    {
+                                        "success": False,
+                                        "interrupted": True,
+                                        "message": f"Tool '{rtc['name']}' was interrupted or not executed.",
+                                    },
+                                    ensure_ascii=False,
+                                    default=str,
+                                ),
+                            })
                     break
 
                 # Record provenance
