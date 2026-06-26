@@ -293,9 +293,15 @@ class PassiCLI:
                             restored += 1
                 except Exception:
                     pass
-            # Flush any remaining tool results
+            # Discard any remaining orphaned tool results — they cannot be
+            # paired with a missing agent_message and would cause
+            # Anthropic API 400 errors on the next request.
             if pending_tool_results:
-                self.runtime.context.add_message("tool_results", pending_tool_results)
+                logger.warning(
+                    "Discarding %d orphaned tool_result(s) — no matching "
+                    "agent_message in wire log. Session may have been saved mid-execution.",
+                    len(pending_tool_results),
+                )
             self._print_system(
                 f"Session loaded: {session_id}  |  "
                 f"Domain: {meta.domain}  |  "
@@ -686,11 +692,90 @@ class PassiCLI:
 
     # ── Message Processing ─────────────────────────────────────────────
 
+    async def _wait_for_esc(self) -> None:
+        """Wait for ESC key press. Cross-platform via prompt_toolkit raw input.
+
+        Returns when ESC is pressed or the task is cancelled.
+        """
+        from prompt_toolkit.input import create_input
+        from prompt_toolkit.keys import Keys
+
+        inp = create_input()
+        try:
+            while True:
+                keys = await inp.read_keys()
+                for key in keys:
+                    if key.key == Keys.Escape:
+                        return
+        except asyncio.CancelledError:
+            pass
+        finally:
+            inp.close()
+
+    async def _collect_agent_stream(
+        self,
+        message: str,
+        progress: Progress,
+        task: Any,
+    ) -> tuple[list[str], set[str], dict[str, Any] | None]:
+        """Run agent chat_stream and collect incremental events.
+
+        Returns (response_text, tool_calls_shown, pending_question).
+        Displays events via _print_* methods as they arrive.
+        """
+        assert self.agent is not None
+
+        response_text: list[str] = []
+        tool_calls_shown: set[str] = set()
+        pending_question: dict[str, Any] | None = None
+
+        try:
+            stream = self.agent.chat_stream(message)
+            async for event in stream:
+                if event.type == "thinking":
+                    progress.update(task, description=f"[dim]{event.content}[/dim]")
+                elif event.type == "text":
+                    progress.stop()
+                    response_text.append(event.content)
+                    self._print_agent(event.content)
+                    progress.start()
+                    progress.update(task, description="[dim]Continuing...[/dim]")
+                elif event.type == "tool_call":
+                    tc_key = f"{event.tool_name}:{event.content}"
+                    if tc_key not in tool_calls_shown:
+                        tool_calls_shown.add(tc_key)
+                        progress.stop()
+                        self._print_tool_call(event.tool_name or "", event.content or "")
+                        progress.start()
+                elif event.type == "tool_result":
+                    progress.stop()
+                    self._print_tool_result(event.tool_name or "", event.content or "")
+                    progress.start()
+                elif event.type == "error":
+                    progress.stop()
+                    self._print_error(f"Tool error: {event.content}")
+                    progress.start()
+                elif event.type == "pending_question":
+                    pending_question = {
+                        "question": event.content,
+                        "context": event.metadata.get("context", ""),
+                        "options": event.metadata.get("options"),
+                    }
+        except Exception as e:
+            progress.stop()
+            self._print_error(f"Agent error: {e}")
+
+        return response_text, tool_calls_shown, pending_question
+
     async def _process_message(self, message: str) -> None:
         """Process a user message through the agent with streaming.
 
-        Handles pending_question events from ask_user tool (plan Q&A, step confirmation).
-        After answering, loops back to process the answer through the agent.
+        Runs the agent stream and an ESC key watcher concurrently so the
+        user can interrupt a running agent/tool by pressing Escape.
+
+        Handles pending_question events from ask_user tool (plan Q&A,
+        step confirmation). After answering, loops back to process the
+        answer through the agent.
         """
         assert self.agent is not None
 
@@ -704,44 +789,36 @@ class PassiCLI:
             console=self.console,
             transient=True,
         ) as progress:
-            task = progress.add_task("[dim]Analyzing...[/dim]", total=None)
+            task = progress.add_task("[dim]Analyzing... (ESC to interrupt)[/dim]", total=None)
 
-            try:
-                stream = self.agent.chat_stream(message)
-                async for event in stream:
-                    if event.type == "thinking":
-                        progress.update(task, description=f"[dim]{event.content}[/dim]")
-                    elif event.type == "text":
-                        progress.stop()
-                        response_text.append(event.content)
-                        self._print_agent(event.content)
-                        progress.start()
-                        progress.update(task, description="[dim]Continuing...[/dim]")
-                    elif event.type == "tool_call":
-                        tc_key = f"{event.tool_name}:{event.content}"
-                        if tc_key not in tool_calls_shown:
-                            tool_calls_shown.add(tc_key)
-                            progress.stop()
-                            self._print_tool_call(event.tool_name or "", event.content or "")
-                            progress.start()
-                    elif event.type == "tool_result":
-                        progress.stop()
-                        self._print_tool_result(event.tool_name or "", event.content or "")
-                        progress.start()
-                    elif event.type == "error":
-                        progress.stop()
-                        self._print_error(f"Tool error: {event.content}")
-                        progress.start()
-                    elif event.type == "pending_question":
-                        pending_question = {
-                            "question": event.content,
-                            "context": event.metadata.get("context", ""),
-                            "options": event.metadata.get("options"),
-                        }
-            except Exception as e:
+            agent_task = asyncio.create_task(
+                self._collect_agent_stream(message, progress, task)
+            )
+            esc_task = asyncio.create_task(self._wait_for_esc())
+
+            done, pending = await asyncio.wait(
+                [esc_task, agent_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if esc_task in done:
+                # ESC pressed — interrupt the agent
+                if self.agent:
+                    self.agent.interrupt()
                 progress.stop()
-                self._print_error(f"Agent error: {e}")
-                return
+                self._print_system("[dim]Interrupted — waiting for agent to stop...[/dim]")
+                try:
+                    response_text, tool_calls_shown, pending_question = (
+                        await asyncio.wait_for(agent_task, timeout=30)
+                    )
+                except asyncio.TimeoutError:
+                    agent_task.cancel()
+                    response_text, tool_calls_shown, pending_question = [], set(), None
+                esc_task.cancel()
+            else:
+                # Agent finished normally
+                esc_task.cancel()
+                response_text, tool_calls_shown, pending_question = agent_task.result()
 
             progress.stop()
 
@@ -1321,7 +1398,7 @@ class PassiCLI:
             f"[dim]Mode:[/dim] [bold]{mode}[/bold]  "
             f"[dim]Skills:[/dim] {skills}  "
             f"[dim]Session:[/dim] {sid}  "
-            f"[dim]Ctrl+T: mode | Ctrl+S: save | Ctrl+L: clear | Ctrl+D: quit[/dim]"
+            f"[dim]ESC: interrupt | Ctrl+T: mode | Ctrl+S: save | Ctrl+L: clear | Ctrl+D: quit[/dim]"
         )
         self.console.print(bar, style=STATUS_STYLE)
         self._buffer_add("status_bar", bar)
