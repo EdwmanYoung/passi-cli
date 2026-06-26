@@ -286,8 +286,21 @@ class PassiCLI:
                             if can_pair:
                                 self.runtime.context.add_message("assistant", content)
                                 if pending_tool_results:
-                                    self.runtime.context.add_message("tool_results", pending_tool_results)
-                                    pending_tool_results = []
+                                    # Only add results that match tool_use IDs in this
+                                    # agent message. Extra results (e.g. from ask_user
+                                    # where the tool_use was popped from final_content)
+                                    # stay in the buffer for later pairing.
+                                    matched = [
+                                        tr for tr in pending_tool_results
+                                        if tr.get("tool_use_id") in self._extract_tool_use_ids(content)
+                                    ]
+                                    unmatched = [
+                                        tr for tr in pending_tool_results
+                                        if tr.get("tool_use_id") not in self._extract_tool_use_ids(content)
+                                    ]
+                                    if matched:
+                                        self.runtime.context.add_message("tool_results", matched)
+                                    pending_tool_results = unmatched
                             else:
                                 clean = self._strip_tool_use_blocks(content)
                                 if clean:
@@ -1367,6 +1380,16 @@ class PassiCLI:
         return tool_use_ids.issubset(result_ids)
 
     @staticmethod
+    def _extract_tool_use_ids(content: Any) -> set[str]:
+        """Extract tool_use block IDs from content."""
+        if not isinstance(content, list):
+            return set()
+        return {
+            b["id"] for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id")
+        }
+
+    @staticmethod
     def _strip_tool_use_blocks(content: Any, keep_ids: set[str] | None = None) -> Any:
         """Remove tool_use blocks from content, keeping only text blocks.
 
@@ -1443,6 +1466,30 @@ class PassiCLI:
                     }
                     if result_ids and result_ids.issubset(tool_use_ids):
                         clean.append(msg)
+                    elif result_ids:
+                        # Partial or no match. Try to salvage matching results.
+                        matching = result_ids & tool_use_ids
+                        if matching:
+                            filtered = [
+                                r for r in result_data
+                                if isinstance(r, dict) and r.get("tool_use_id") in matching
+                            ]
+                            msg = dict(msg)
+                            msg["content"] = filtered
+                            clean.append(msg)
+                            modified = True
+                        else:
+                            # No overlap: remove tool_results, strip orphaned
+                            # tool_use from preceding assistant.
+                            removed += 1
+                            stripped = self._strip_tool_use_blocks(prev_content)
+                            if stripped is not None:
+                                clean[-1] = dict(clean[-1])
+                                clean[-1]["content"] = stripped
+                                modified = True
+                            else:
+                                clean.pop()
+                                removed += 1
                     else:
                         removed += 1
                 else:

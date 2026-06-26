@@ -2598,6 +2598,36 @@ class TestCanPairToolResults:
         content = [{"type": "tool_use", "id": "call_abc", "name": "t", "input": {}}]
         assert PassiCLI._can_pair_tool_results(content, []) is False
 
+    def test_can_pair_allows_extra_results(self):
+        """Subset check allows extra results — caller must filter them."""
+        content = [
+            {"type": "tool_use", "id": "call_a", "name": "t", "input": {}},
+        ]
+        tool_results = [
+            {"tool_use_id": "call_a", "content": "ok"},
+            {"tool_use_id": "call_b", "content": "extra"},  # ask_user pattern
+        ]
+        assert PassiCLI._can_pair_tool_results(content, tool_results) is True
+
+
+class TestExtractToolUseIds:
+    """_extract_tool_use_ids extracts tool_use block IDs."""
+
+    def test_extracts_ids_from_content(self):
+        content = [
+            {"type": "text", "text": "Hello"},
+            {"type": "tool_use", "id": "id_1", "name": "t1", "input": {}},
+            {"type": "tool_use", "id": "id_2", "name": "t2", "input": {}},
+        ]
+        assert PassiCLI._extract_tool_use_ids(content) == {"id_1", "id_2"}
+
+    def test_no_tool_use_returns_empty(self):
+        content = [{"type": "text", "text": "Just text"}]
+        assert PassiCLI._extract_tool_use_ids(content) == set()
+
+    def test_string_content_returns_empty(self):
+        assert PassiCLI._extract_tool_use_ids("plain string") == set()
+
 
 class TestGetSelectionFallback:
     """_get_selection_fallback provides text-based option selection."""
@@ -3077,3 +3107,30 @@ class TestValidateContext:
         assert types == ["text", "tool_use"]
         remaining_ids = [b["id"] for b in assistant_content if b["type"] == "tool_use"]
         assert remaining_ids == ["tool_a"]
+
+    def test_extra_tool_results_filtered_not_removed(self, tmp_path):
+        """tool_results with extra IDs beyond assistant's tool_use — extras filtered."""
+        cli, _, runtime = _make_cli_with_mocks(tmp_path, create_agent=True)
+        assert cli.runtime is not None
+
+        runtime.context.add_message("user", "Q")
+        runtime.context.add_message("assistant", [
+            {"type": "text", "text": "OK"},
+            {"type": "tool_use", "id": "tool_a", "name": "run_python",
+             "input": {"code": "print(1)"}},
+        ])
+        # Extra result B has no matching tool_use — ask_user pattern
+        runtime.context.add_message("tool_results", [
+            {"tool_use_id": "tool_a", "content": "success"},
+            {"tool_use_id": "tool_b", "content": "user answer"},
+        ])
+
+        removed = cli._validate_context()
+        assert removed == 0  # Nothing removed, only extra result filtered
+
+        msgs = runtime.context.get_messages()
+        assert len(msgs) == 3
+        # tool_results should only have tool_a, tool_b filtered out
+        results = msgs[2]["content"]
+        result_ids = [r["tool_use_id"] for r in results]
+        assert result_ids == ["tool_a"]
