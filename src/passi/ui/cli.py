@@ -18,6 +18,7 @@ from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
@@ -103,6 +104,8 @@ HELP_TEXT = """
 | `/save <name>` | Save session checkpoint |
 | `/clear` | Clear conversation context |
 | `/export` | Export session as chat log |
+| `/sessions list` | List available sessions |
+| `/sessions load <id>` | Load a different session |
 | `/domain <name>` | Switch analysis domain |
 
 **Other:**
@@ -118,6 +121,7 @@ _SENTINEL_CYCLE_MODE = "\x00mode"
 _SENTINEL_SAVE = "\x00save"
 _SENTINEL_CLEAR_SCREEN = "\x00clear_screen"
 _SENTINEL_QUIT = "\x00quit"
+_SENTINEL_CUSTOM_INPUT = "\x00custom"
 
 # prompt_toolkit style for the input prompt
 _PROMPT_STYLE = PTStyle.from_dict({
@@ -138,6 +142,8 @@ class PassiCLI:
         self._running: bool = True
         self._start_mode: str | None = None
         self._start_skills: list[str] | None = None
+        self._resume_session_id: str | None = None
+        self._input_history = InMemoryHistory()
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -146,10 +152,31 @@ class PassiCLI:
         self.console.clear()
         self.console.print(WELCOME_BANNER, style=HEADER_STYLE)
 
-        # Initialize agent
-        self.runtime.session.create_session(domain=self._domain)
-        self.agent = PassiAgent(self.runtime)
-        await self.agent.initialize()
+        existing_sessions = self.runtime.session.list_sessions()
+
+        # Determine which session to use
+        if self._resume_session_id:
+            # CLI flag specified — load directly
+            await self._load_existing_session(self._resume_session_id)
+        elif existing_sessions:
+            # Sessions exist — let user choose
+            self._print_system(
+                f"Found {len(existing_sessions)} existing session(s) in this project."
+            )
+            options = ["New Session"]
+            for s in existing_sessions:
+                options.append(self._format_session_entry(s))
+
+            choice = await self._get_selection(options)
+            if choice == "New Session" or not choice:
+                # Start fresh
+                await self._start_new_session()
+            else:
+                # Extract session_id from the formatted entry
+                sid = choice.split(" | ")[0].strip()
+                await self._load_existing_session(sid)
+        else:
+            await self._start_new_session()
 
         # Apply startup mode/skills from CLI flags
         if self._start_mode:
@@ -171,6 +198,73 @@ class PassiCLI:
             await self._repl()
         finally:
             pass
+
+    async def _start_new_session(self) -> None:
+        """Create a new session and initialize the agent."""
+        self.runtime.session.create_session(domain=self._domain)
+        self.agent = PassiAgent(self.runtime)
+        await self.agent.initialize()
+
+    async def _load_existing_session(self, session_id: str) -> None:
+        """Load an existing session and restore conversation context.
+
+        Loads session metadata, creates and initializes the agent, then replays
+        user/assistant messages from the session's wire log into the context.
+        """
+        meta = self.runtime.session.load_session(session_id)
+        self._domain = meta.domain
+        self._print_system(f"Loading session: {session_id}")
+
+        # Create and initialize agent (plan is auto-loaded by initialize)
+        self.agent = PassiAgent(self.runtime)
+        await self.agent.initialize()
+
+        # Restore conversation context from wire log
+        session_dir = self.runtime.session.get_session_dir()
+        wire_path = session_dir / "wire.jsonl"
+        if wire_path.exists():
+            from passi.wire.persistence import WirePersistence
+            wp = WirePersistence(wire_path)
+            events = wp.read_session(session_id)
+            restored = 0
+            for event in events:
+                if event.type == "user_message":
+                    content = event.data.get("content", "")
+                    if content:
+                        self.runtime.context.add_message("user", content)
+                        restored += 1
+                elif event.type == "agent_message":
+                    content = event.data.get("content", "")
+                    if content:
+                        self.runtime.context.add_message("assistant", content)
+                        restored += 1
+            self._print_system(
+                f"Session loaded: {session_id}  |  "
+                f"Domain: {meta.domain}  |  "
+                f"Messages restored: {restored}"
+            )
+        else:
+            self._print_system(
+                f"Session loaded: {session_id}  |  "
+                f"Domain: {meta.domain}  |  "
+                f"No wire log found (context is empty)"
+            )
+
+    @staticmethod
+    def _format_session_entry(session: dict[str, Any]) -> str:
+        """Format a session summary for display in the selection list."""
+        sid = session["session_id"]
+        domain = session.get("domain", "multi-omics")
+        msg_count = session.get("message_count", 0)
+        created = session.get("created_at", "")
+        # Format the ISO timestamp to a shorter form
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(created)
+            created_str = dt.strftime("%Y-%m-%d %H:%M")
+        except (ValueError, TypeError):
+            created_str = created[:16] if created else "unknown"
+        return f"{sid} | {domain} | {msg_count} msgs | {created_str}"
 
     async def _shutdown(self) -> None:
         """Clean shutdown."""
@@ -295,6 +389,7 @@ class PassiCLI:
             style=_PROMPT_STYLE,
             message=_message,
             rprompt=_rprompt,
+            history=self._input_history,
             complete_while_typing=False,
         )
 
@@ -341,6 +436,86 @@ class PassiCLI:
         """Get user input with a custom prompt label, delegating to _get_input."""
         self._print_system(prompt_text)
         return await self._get_input()
+
+    async def _get_selection(self, options: list[str]) -> str:
+        """Present options as an interactive list with arrow key navigation.
+
+        Up/down arrows move the selection highlight. Enter confirms the choice.
+        Number keys 1-9 select directly. The last option is always "Custom input..."
+        which returns a sentinel so the caller can switch to free-text mode.
+
+        Returns the selected option text, _SENTINEL_CUSTOM_INPUT for custom input,
+        or empty string if cancelled.
+        """
+        from prompt_toolkit.buffer import Buffer
+
+        display_options = list(options)
+        display_options.append("Custom input...")
+
+        selected = [0]  # mutable closure for key binding access
+
+        kb = KeyBindings()
+
+        @kb.add("up", eager=True)
+        def _(event: Any) -> None:
+            selected[0] = (selected[0] - 1) % len(display_options)
+            event.app.invalidate()
+
+        @kb.add("down", eager=True)
+        def _(event: Any) -> None:
+            selected[0] = (selected[0] + 1) % len(display_options)
+            event.app.invalidate()
+
+        @kb.add("enter", eager=True)
+        def _(event: Any) -> None:
+            if selected[0] == len(display_options) - 1:
+                event.app.exit(result=_SENTINEL_CUSTOM_INPUT)
+            else:
+                event.app.exit(result=options[selected[0]])
+
+        # Number keys for direct selection
+        for i in range(min(len(display_options), 9)):
+            @kb.add(str(i + 1), eager=True)
+            def _(event: Any, idx: int = i) -> None:
+                if idx == len(display_options) - 1:
+                    event.app.exit(result=_SENTINEL_CUSTOM_INPUT)
+                else:
+                    event.app.exit(result=options[idx])
+
+        @kb.add("c-c", eager=True)
+        def _(event: Any) -> None:
+            event.app.exit(result="")
+
+        def _bottom_toolbar() -> HTML:
+            lines = []
+            for i, opt in enumerate(display_options):
+                if i == selected[0]:
+                    lines.append(f"<b>> {i + 1}. {opt}</b>")
+                else:
+                    lines.append(f"  {i + 1}. {opt}")
+            return HTML("\n".join(lines))
+
+        def _message() -> HTML:
+            mode = self.agent.mode if self.agent else "chat"
+            label = _MODE_LABELS.get(mode, "[chat]")
+            if self.agent and self.agent.agent_busy:
+                label = f"[{mode}] ●"
+            return HTML(f"<prompt>{label} &gt; [select] </prompt>")
+
+        try:
+            session = PromptSession(
+                key_bindings=kb,
+                style=_PROMPT_STYLE,
+                message=_message,
+                bottom_toolbar=_bottom_toolbar,
+                input=Buffer(read_only=True),
+            )
+            result: str = await session.prompt_async()
+            return result
+        except KeyboardInterrupt:
+            return ""
+        except EOFError:
+            return ""
 
     # ── Message Processing ─────────────────────────────────────────────
 
@@ -416,11 +591,14 @@ class PassiCLI:
         self.console.print(
             Panel(q_text, style=SYSTEM_STYLE, title="PassiAgent asks", title_align="left")
         )
-        if q_options:
-            self._print_system(f"Options: {', '.join(q_options)}")
 
-        # Get answer from user
-        answer = await self._get_user_input("Your answer: ")
+        # Get answer from user — use selection UI when options are provided
+        if q_options:
+            answer = await self._get_selection(q_options)
+            if answer == _SENTINEL_CUSTOM_INPUT:
+                answer = await self._get_user_input("Your answer: ")
+        else:
+            answer = await self._get_user_input("Your answer: ")
         if not answer.strip():
             answer = "(no answer)"
 
@@ -450,6 +628,7 @@ class PassiCLI:
             "/hook": self._cmd_hook,
             "/status": self._cmd_status,
             "/config": self._cmd_config,
+            "/sessions": self._cmd_sessions,
             "/plan": self._cmd_plan,
             "/interrupt": self._cmd_interrupt,
             "/quit": self._cmd_quit,
@@ -491,6 +670,52 @@ class PassiCLI:
             report_path = export_dir / f"chatlog_{session.session_id}.md"
             report_path.write_text(chatlog, encoding="utf-8")
             self._print_system(f"Chat log exported: {report_path}")
+
+    async def _cmd_sessions(self, arg: str) -> None:
+        """Handle /sessions list|load commands."""
+        parts = arg.strip().split(maxsplit=1)
+        subcmd = parts[0].lower() if parts and parts[0] else "list"
+        subarg = parts[1] if len(parts) > 1 else ""
+
+        if subcmd == "list":
+            sessions = self.runtime.session.list_sessions()
+            if not sessions:
+                self._print_system("No saved sessions found.")
+                return
+            table = Table(title="Sessions", style=SYSTEM_STYLE, border_style="dim")
+            table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("Domain")
+            table.add_column("Messages", justify="right")
+            table.add_column("Created")
+            for s in sessions:
+                try:
+                    from datetime import datetime, timezone
+                    dt = datetime.fromisoformat(s.get("created_at", ""))
+                    created_str = dt.strftime("%Y-%m-%d %H:%M")
+                except (ValueError, TypeError):
+                    created_str = s.get("created_at", "")[:16]
+                table.add_row(
+                    s["session_id"],
+                    s.get("domain", "multi-omics"),
+                    str(s.get("message_count", 0)),
+                    created_str,
+                )
+            self.console.print(table)
+
+        elif subcmd == "load":
+            if not subarg:
+                self._print_error("Usage: /sessions load <session_id>")
+                return
+            self._print_system(f"Loading session: {subarg} ...")
+            await self._load_existing_session(subarg)
+            self._print_system(
+                f"Session: {self.runtime.session.active_session.session_id}  |  "
+                f"Domain: {self._domain}"
+            )
+            self._print_status_bar()
+
+        else:
+            self._print_error(f"Unknown subcommand: {subcmd}. Use 'list' or 'load <id>'.")
 
     async def _cmd_domain(self, arg: str) -> None:
         if arg:

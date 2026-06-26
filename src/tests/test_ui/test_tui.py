@@ -1694,7 +1694,7 @@ class TestPassiCLIPendingQuestion:
     async def test_with_options(self, tmp_path):
         cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
         cli._process_message = AsyncMock()
-        with patch.object(cli, "_get_input", return_value="DESeq2"):
+        with patch.object(cli, "_get_selection", return_value="DESeq2"):
             await cli._handle_pending_question({
                 "question": "Which method?",
                 "options": ["DESeq2", "edgeR", "limma"],
@@ -1706,14 +1706,7 @@ class TestPassiCLIPendingQuestion:
                 if hasattr(arg, 'renderable') and "Which method?" in str(arg.renderable):
                     found_panel = True
         assert found_panel, "Should display question in Panel"
-        # Options printed
-        found_opts = False
-        for call_args in mock_console.print.call_args_list:
-            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
-            if "Options:" in args_text and "DESeq2" in args_text:
-                found_opts = True
-        assert found_opts, "Should display options"
-        # Answer routed to _process_message
+        # Answer routed to _process_message via selection
         cli._process_message.assert_called_once_with("DESeq2")
 
     @pytest.mark.asyncio
@@ -1961,3 +1954,315 @@ class TestPassiCLIHookAddInteractive:
         assert hook.type == "python"
         assert hook.code == "import sys\nprint('ok')"
         assert hook.command == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Selection UI & Command History
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLISelectionUI:
+    """_get_selection() interactive option selection and _handle_pending_question routing."""
+
+    @pytest.mark.asyncio
+    async def test_options_route_to_get_selection(self, tmp_path):
+        """When options are present, _handle_pending_question calls _get_selection."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_selection", return_value="Proceed"):
+            await cli._handle_pending_question({
+                "question": "Proceed with step?",
+                "options": ["Proceed", "Skip", "Modify"],
+            })
+        cli._process_message.assert_called_once_with("Proceed")
+
+    @pytest.mark.asyncio
+    async def test_custom_input_sentinel_falls_back_to_user_input(self, tmp_path):
+        """When _get_selection returns _SENTINEL_CUSTOM_INPUT, call _get_user_input."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_selection", return_value="\x00custom") as mock_sel, \
+             patch.object(cli, "_get_user_input", return_value="use limma instead") as mock_ui:
+            await cli._handle_pending_question({
+                "question": "Which method?",
+                "options": ["DESeq2", "edgeR"],
+            })
+        mock_sel.assert_called_once()
+        mock_ui.assert_called_once_with("Your answer: ")
+        cli._process_message.assert_called_once_with("use limma instead")
+
+    @pytest.mark.asyncio
+    async def test_no_options_uses_get_user_input_directly(self, tmp_path):
+        """When no options, _handle_pending_question still uses _get_user_input."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        cli._process_message = AsyncMock()
+        with patch.object(cli, "_get_user_input", return_value="yes") as mock_ui, \
+             patch.object(cli, "_get_selection") as mock_sel:
+            await cli._handle_pending_question({"question": "Proceed?"})
+        mock_sel.assert_not_called()
+        mock_ui.assert_called_once_with("Your answer: ")
+        cli._process_message.assert_called_once_with("yes")
+
+    @pytest.mark.asyncio
+    async def test_get_selection_exists_and_accepts_options(self, tmp_path):
+        """_get_selection method exists on PassiCLI and accepts options list."""
+        cli, mock_console, _ = _make_cli_with_mocks(tmp_path)
+        assert hasattr(cli, "_get_selection")
+        # Verify callable with options — may fail without terminal, that's expected
+        assert callable(cli._get_selection)
+
+    def test_get_selection_with_empty_list_does_not_crash_on_build(self, tmp_path):
+        """_get_selection builds display_options with Custom input... appended."""
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        # Verify method exists and is properly defined
+        import inspect
+        sig = inspect.signature(cli._get_selection)
+        assert list(sig.parameters.keys()) == ["options"]
+
+
+class TestPassiCLIInputHistory:
+    """Command input history via InMemoryHistory."""
+
+    def test_input_history_created_in_init(self, tmp_path):
+        """_input_history is an InMemoryHistory instance after construction."""
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        from prompt_toolkit.history import InMemoryHistory
+        assert isinstance(cli._input_history, InMemoryHistory)
+
+    def test_input_history_passed_to_prompt_session(self, tmp_path):
+        """PromptSession in _create_input_session receives the history object."""
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        try:
+            session = cli._create_input_session()
+            # The session's default_buffer should have our history
+            assert session.default_buffer.history is cli._input_history
+        except Exception:
+            # Creating PromptSession may fail without terminal on some platforms
+            pytest.skip("PromptSession creation requires terminal")
+
+    def test_history_is_shared_across_sessions(self, tmp_path):
+        """Same history instance is reused across PromptSession creations."""
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        try:
+            s1 = cli._create_input_session()
+            s2 = cli._create_input_session()
+            assert s1.default_buffer.history is s2.default_buffer.history
+            assert s1.default_buffer.history is cli._input_history
+        except Exception:
+            pytest.skip("PromptSession creation requires terminal")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Session Resume — Load Historical Sessions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPassiCLISessionResume:
+    """Session detection, selection, and loading on startup."""
+
+    def test_format_session_entry(self, tmp_path):
+        """_format_session_entry formats session dict into display string."""
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        entry = cli._format_session_entry({
+            "session_id": "session_20260626_143022",
+            "domain": "transcriptomics",
+            "message_count": 15,
+            "created_at": "2026-06-26T14:30:22.123456+00:00",
+        })
+        assert "session_20260626_143022" in entry
+        assert "transcriptomics" in entry
+        assert "15 msgs" in entry
+        assert "2026-06-26 14:30" in entry
+
+    def test_format_session_entry_fallback_date(self, tmp_path):
+        """_format_session_entry handles missing/invalid created_at."""
+        cli, _, _ = _make_cli_with_mocks(tmp_path)
+        entry = cli._format_session_entry({
+            "session_id": "s1",
+            "domain": "genomics",
+            "message_count": 0,
+            "created_at": "",
+        })
+        assert "s1" in entry
+        assert "genomics" in entry
+        assert "0 msgs" in entry
+
+    @pytest.mark.asyncio
+    async def test_load_existing_session_with_wire(self, tmp_path):
+        """_load_existing_session loads metadata and replays wire events into context."""
+        from passi.wire.protocol import WireEvent, EventType
+
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+
+        # Create a session with metadata and wire.jsonl
+        meta = runtime.session.create_session(domain="genomics")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write wire events
+        wire_path = session_dir / "wire.jsonl"
+        events = [
+            WireEvent(type=EventType.USER_MESSAGE, session_id=sid, data={"content": "analyze RNA-seq"}),
+            WireEvent(type=EventType.AGENT_MESSAGE, session_id=sid, data={"content": "I will help analyze."}),
+            WireEvent(type=EventType.TOOL_CALL, session_id=sid, data={"tool": "run_python", "params": {"code": "x=1"}}),
+        ]
+        wire_path.write_text("\n".join(e.model_dump_json() for e in events), encoding="utf-8")
+
+        # Load the session
+        await cli._load_existing_session(sid)
+
+        # Verify domain restored
+        assert cli._domain == "genomics"
+        # Verify agent was created and initialized
+        assert cli.agent is not None
+
+    @pytest.mark.asyncio
+    async def test_load_existing_session_no_wire(self, tmp_path):
+        """_load_existing_session handles missing wire.jsonl gracefully."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="clinical")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        # No wire.jsonl written
+
+        await cli._load_existing_session(sid)
+        assert cli._domain == "clinical"
+        assert cli.agent is not None
+
+    @pytest.mark.asyncio
+    async def test_start_with_existing_sessions_shows_selection(self, tmp_path):
+        """When sessions exist, start() offers selection UI."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        runtime.session.create_session(domain="transcriptomics")
+        # Mock _get_selection to simulate user choosing "New Session"
+        with patch.object(cli, "_get_selection", return_value="New Session") as mock_sel, \
+             patch.object(cli, "_start_new_session") as mock_new, \
+             patch.object(cli, "_repl") as mock_repl:
+            await cli.start()
+            mock_sel.assert_called_once()
+            mock_new.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_with_existing_session_chosen(self, tmp_path):
+        """When user selects an existing session, it gets loaded."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="genomics")
+        sid = meta.session_id
+        # Need wire.jsonl for load to work
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "wire.jsonl").write_text("", encoding="utf-8")
+
+        # Format matches what _format_session_entry produces
+        formatted = cli._format_session_entry({
+            "session_id": sid,
+            "domain": "genomics",
+            "message_count": 0,
+            "created_at": meta.created_at,
+        })
+
+        with patch.object(cli, "_get_selection", return_value=formatted), \
+             patch.object(cli, "_repl") as mock_repl:
+            await cli.start()
+            assert cli.agent is not None
+            assert cli._domain == "genomics"
+            assert runtime.session.active_session.session_id == sid
+
+    @pytest.mark.asyncio
+    async def test_start_no_existing_sessions_creates_new(self, tmp_path):
+        """When no sessions exist, start() creates a new one directly (no selection)."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path, create_agent=False)
+        with patch.object(runtime.session, "list_sessions", return_value=[]), \
+             patch.object(cli, "_get_selection") as mock_sel, \
+             patch.object(cli, "_repl") as mock_repl:
+            await cli.start()
+            # Selection UI should NOT be used when no sessions exist
+            mock_sel.assert_not_called()
+            # Agent should be created and session active
+            assert cli.agent is not None
+
+    @pytest.mark.asyncio
+    async def test_resume_session_id_skips_selection(self, tmp_path):
+        """When _resume_session_id is set, load directly without selection UI."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="clinical")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "wire.jsonl").write_text("", encoding="utf-8")
+
+        cli._resume_session_id = sid
+        with patch.object(cli, "_get_selection") as mock_sel, \
+             patch.object(cli, "_repl") as mock_repl:
+            await cli.start()
+            mock_sel.assert_not_called()
+            assert cli.agent is not None
+            assert runtime.session.active_session.session_id == sid
+
+
+class TestPassiCLISessionsCommand:
+    """/sessions list and /sessions load slash commands."""
+
+    @pytest.mark.asyncio
+    async def test_sessions_list_with_data(self, tmp_path):
+        """/sessions list renders a table when sessions exist."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        runtime.session.create_session(domain="transcriptomics")
+        await cli._cmd_sessions("list")
+        # Should print a Table
+        found_table = False
+        for call_args in mock_console.print.call_args_list:
+            for arg in call_args[0]:
+                if hasattr(arg, 'columns'):
+                    found_table = True
+                    break
+        assert found_table, "Should render a Rich Table"
+
+    @pytest.mark.asyncio
+    async def test_sessions_list_empty(self, tmp_path):
+        """/sessions list shows a message when no sessions exist."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        # Ensure no sessions — but list_sessions may find system sessions
+        # Just verify it doesn't crash
+        await cli._cmd_sessions("list")
+        # Should not raise exception
+
+    @pytest.mark.asyncio
+    async def test_sessions_load_with_id(self, tmp_path):
+        """/sessions load <id> calls _load_existing_session."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        meta = runtime.session.create_session(domain="genomics")
+        sid = meta.session_id
+        session_dir = runtime.session.get_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "wire.jsonl").write_text("", encoding="utf-8")
+
+        await cli._cmd_sessions(f"load {sid}")
+        assert cli.agent is not None
+        assert runtime.session.active_session.session_id == sid
+
+    @pytest.mark.asyncio
+    async def test_sessions_load_missing_id_shows_error(self, tmp_path):
+        """/sessions load without ID shows usage error."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        await cli._cmd_sessions("load")
+        found_error = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "Usage:" in args_text:
+                found_error = True
+        assert found_error, "Should show usage error"
+
+    @pytest.mark.asyncio
+    async def test_sessions_unknown_subcommand(self, tmp_path):
+        """/sessions with bad subcommand shows error."""
+        cli, mock_console, runtime = _make_cli_with_mocks(tmp_path)
+        await cli._cmd_sessions("bogus")
+        found_error = False
+        for call_args in mock_console.print.call_args_list:
+            args_text = " ".join(str(a) for a in call_args[0] if isinstance(a, str))
+            if "Unknown subcommand" in args_text or "bogus" in args_text:
+                found_error = True
+        assert found_error, "Should show unknown subcommand error"

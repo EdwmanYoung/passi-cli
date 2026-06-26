@@ -87,6 +87,9 @@ class PassiAgent(Soul):
         self._task_tracker = TaskTracker(session_dir)
         self._task_tracker.load_tasks()  # Load existing tasks if present
 
+        # Wire events should persist inside the session directory for replay
+        self.wire._wire_path = session_dir / "wire.jsonl"
+
         self._tool_registry = self._create_tool_registry()
 
         # ── Initialize R environment ──
