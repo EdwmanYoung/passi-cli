@@ -5,19 +5,61 @@ Provides shared fixtures at session, module, and function scope.
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import pytest
 
 from passi.config import PassiConfig
 
-
 # ═══════════════════════════════════════════════════════════════
 # Session-scoped fixtures (expensive, shared across all tests)
 # ═══════════════════════════════════════════════════════════════
+
+@pytest.fixture(scope="session", autouse=True)
+def _configure_project_r_env() -> dict[str, str]:
+    """Auto-configure the project-local R environment when available.
+
+    Sets R_HOME to the project-local R/ directory, R_LIBS_USER to R-lib/,
+    and prepends R's bin directory to PATH so Rscript is discoverable.
+    These environment variables are restored after the test session.
+    If the project-local R is missing, the fixture is a no-op.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    r_home = project_root / "R"
+    r_lib = project_root / "R-lib"
+
+    if not (r_home / "bin" / "Rscript.exe").exists():
+        yield {}
+        return
+
+    original: dict[str, str | None] = {
+        "R_HOME": os.environ.get("R_HOME"),
+        "R_LIBS_USER": os.environ.get("R_LIBS_USER"),
+        "PATH": os.environ.get("PATH"),
+    }
+    os.environ["R_HOME"] = str(r_home)
+    os.environ["R_LIBS_USER"] = str(r_lib)
+
+    # Prepend R's bin directory to PATH so Rscript is discoverable.
+    r_bin = r_home / "bin" / "x64"
+    if not r_bin.exists():
+        r_bin = r_home / "bin"
+    os.environ["PATH"] = str(r_bin) + os.pathsep + os.environ.get("PATH", "")
+
+    yield {
+        "r_home": str(r_home),
+        "r_lib": str(r_lib),
+        "rscript": str(r_home / "bin" / "Rscript.exe"),
+    }
+    for key, value in original.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
 
 @pytest.fixture(scope="session")
 def test_config() -> PassiConfig:
@@ -103,8 +145,8 @@ def make_count_matrix(
     genes = [f"GENE{i}" for i in range(1, n_genes + 1)]
     samples = [f"SAMPLE_{i}" for i in range(1, n_samples + 1)]
     data: dict[str, list[float]] = {}
-    for gene in genes:
-        data[gene] = [float(i * 10 + j) for j, _ in enumerate(samples)]
+    for idx, gene in enumerate(genes):
+        data[gene] = [float(idx * 10 + j) for j, _ in enumerate(samples)]
     df = pd.DataFrame(data)
     filepath = dir_path / filename
     df.to_csv(filepath, index=False)

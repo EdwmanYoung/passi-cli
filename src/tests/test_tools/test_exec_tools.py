@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-
 from pathlib import Path
 
 import pytest
@@ -152,7 +151,7 @@ class TestRunPythonToolRunDir:
         code = "with open('result.csv', 'w') as f:\n    f.write('a,b,c\\n1,2,3')"
         params = RunPythonParams(code=code)
 
-        result = await tool.execute(params)
+        await tool.execute(params)
 
         # File is written to CWD (project root), not run_dir
         cwd_file = Path.cwd() / "result.csv"
@@ -274,18 +273,22 @@ class TestRunRToolRunDir:
 
     @pytest.mark.asyncio
     async def test_rscript_output_files_in_run_dir(self, tmp_path: Path):
-        """R script that writes a file; it appears in run_dir."""
+        """R script that writes a file relative to CWD; it appears in project root."""
         runs_base = tmp_path / "runs"
         tool = RunRTool(runs_base=runs_base, session_id_provider=lambda: "test")
-        code = 'write.csv(data.frame(a=1:3, b=4:6), "output.csv", row.names=FALSE)'
+        # Use a unique filename to avoid collisions and clean up after the test.
+        output_name = f"rscript_output_{tmp_path.name}.csv"
+        code = f'write.csv(data.frame(a=1:3, b=4:6), "{output_name}", row.names=FALSE)'
         params = RunRParams(code=code, use_rpy2=False, timeout=30)
 
         result = await tool.execute(params)
         if not result["success"]:
             pytest.skip("Rscript not available")
 
-        run_dir = Path(result["run_dir"])
-        assert (run_dir / "output.csv").exists()
+        # Subprocess cwd is the project root, so relative files land there.
+        cwd_file = Path.cwd() / output_name
+        assert cwd_file.exists()
+        cwd_file.unlink()
 
     @pytest.mark.asyncio
     async def test_rscript_error_still_creates_run_dir(self, tmp_path: Path):
@@ -319,16 +322,16 @@ class TestRunRToolRunDir:
         assert (run_dir / "run_metadata.json").exists()
 
     @pytest.mark.asyncio
-    async def test_rpy2_error_preserves_stderr(self, tmp_path: Path):
-        """rpy2 exception is captured in stderr.log."""
+    async def test_r_error_preserves_stderr(self, tmp_path: Path):
+        """R execution errors are captured in stderr.log (rpy2 or Rscript)."""
         runs_base = tmp_path / "runs"
         tool = RunRTool(runs_base=runs_base, session_id_provider=lambda: "test")
         params = RunRParams(code="nonexistent_function()", use_rpy2=True, timeout=30)
 
         result = await tool.execute(params)
-        if not result.get("rpy2_available"):
-            pytest.skip("rpy2 not available")
 
         run_dir = Path(result["run_dir"])
         assert run_dir.exists()
         assert (run_dir / "stderr.log").exists()
+        stderr_content = (run_dir / "stderr.log").read_text()
+        assert "nonexistent_function" in stderr_content
