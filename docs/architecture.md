@@ -118,7 +118,7 @@ In-process pub/sub communication channel. All agent ↔ UI events flow through W
 
 Event types: `user_message`, `agent_message`, `agent_thinking`, `tool_call`, `tool_result`, `error`, `system`, `session_start`, `session_end`, `checkpoint`
 
-Wire events are persisted to `wire.jsonl` for:
+Wire events are persisted to session-level `.passi/sessions/{id}/wire.jsonl` (or a global `.passi/wire.jsonl` fallback) for:
 - **Session replay** — re-execute analysis from event log
 - **Audit trail** — full provenance of every tool call
 - **Debugging** — inspect agent reasoning chain
@@ -144,15 +144,21 @@ Multi-provider abstraction with unified `chat()` interface:
 
 ### 3.7 Session Management (`infra/session.py`)
 
-Each session is a directory under `sessions/`:
+Each session is a directory under `.passi/sessions/` (the project-local Passi home directory):
 ```
-sessions/
-└── session_20260624_143052/
-    ├── session.yaml          # SessionMeta (id, domain, timestamps)
-    ├── wire.jsonl            # Full communication log
-    ├── checkpoint_*.json     # State checkpoints
-    └── data/                 # Uploaded/session data
+.passi/
+├── sessions/
+│   └── session_20260624_143052/
+│       ├── session.yaml          # SessionMeta (id, domain, timestamps)
+│       ├── wire.jsonl            # Full communication log
+│       ├── checkpoint_*.json     # State checkpoints
+│       └── data/                 # Uploaded/session data
+├── settings.yaml                 # Project-level settings
+├── hooks.yaml                    # User event hooks
+└── wire.jsonl                    # Global / fallback wire log
 ```
+
+The Passi home directory is resolved as follows: if a `.passi/` directory exists in the current project, it is used; otherwise `~/.passi/` is used. This keeps per-project runtime data isolated from source code.
 
 ### 3.8 Context Manager (`infra/context.py`)
 

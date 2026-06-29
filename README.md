@@ -65,7 +65,7 @@ User Input → PassiAgent (ReAct Loop)
 
 **ReAct loop** (max 20 iterations): LLM reasons → selects tools → tools execute → results fed back → repeat until done. Each iteration uses `tool_call_max_tokens` (4096 default) for tool selection; final responses use `max_tokens` (16384 default).
 
-**Audit trail** (5 layers per session under `./sessions/{id}/`):
+**Audit trail** (5 layers per session under `.passi/sessions/{id}/`):
 
 | File | Content |
 |------|---------|
@@ -74,6 +74,8 @@ User Input → PassiAgent (ReAct Loop)
 | `wire.jsonl` | All agent↔tool↔user communication events |
 | `tasks.jsonl` | Per-tool execution records with timing |
 | `provenance.jsonl` | Tool invocations with file checksums |
+
+A global/fallback `wire.jsonl` is also written to `.passi/wire.jsonl`.
 
 ### Tool Categories
 
@@ -89,6 +91,26 @@ User Input → PassiAgent (ReAct Loop)
 | **clinical** | `survival_analysis` |
 
 Tools extend `CallableTool[ParamsT]` — define a Pydantic params model, `name`, `description`, and `async execute()`. OpenAI/Anthropic function-calling schemas are auto-generated from the params model.
+
+### Project Layout
+
+```
+digitagent/
+├── src/passi/          # Source code
+├── docs/               # Architecture & design docs
+├── scripts/            # Setup helpers
+├── .passi/             # Project-local config + runtime data (gitignored)
+│   ├── settings.yaml   # Project-level settings
+│   ├── hooks.yaml      # User event hooks
+│   ├── sessions/       # Session directories
+│   ├── e2e_results/    # End-to-end test outputs
+│   └── wire.jsonl      # Global audit log
+├── result/             # Analysis outputs (configurable via result_dir)
+├── data/               # User data (configurable via data_dir, gitignored)
+└── test_dataset/       # Public omics test data
+```
+
+`.passi/`, `result/`, and `data/` are gitignored by default because they contain generated outputs, runtime data, and potentially large user data. Keep source code and docs in `src/` and `docs/`. If you want to share project-level defaults, explicitly add `.passi/settings.yaml` and/or `.passi/hooks.yaml` to version control.
 
 ### Plan Mode
 

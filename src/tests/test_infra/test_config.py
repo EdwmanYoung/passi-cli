@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -251,7 +250,10 @@ class TestLoadConfigFromFile:
         """PASSI_CONFIG env var merges JSON overrides onto config."""
         yaml_path = tmp_path / "cfg.yaml"
         yaml_path.write_text(yaml.dump({"default_provider": "anthropic", "debug": False}))
-        monkeypatch.setenv("PASSI_CONFIG", json.dumps({"default_provider": "ollama", "debug": True}))
+        monkeypatch.setenv(
+            "PASSI_CONFIG",
+            json.dumps({"default_provider": "ollama", "debug": True}),
+        )
         cfg = load_config(yaml_path)
         assert cfg.default_provider == "ollama"
         assert cfg.debug is True
@@ -286,9 +288,24 @@ class TestExecutionConfig:
 class TestSessionConfig:
     """SessionConfig defaults and overrides."""
 
-    def test_default_sessions_dir(self):
+    def test_default_sessions_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When no project .passi/ exists, sessions_dir defaults to ~/.passi/sessions.
+        monkeypatch.chdir(tmp_path)
         cfg = SessionConfig()
         assert cfg.sessions_dir == Path.home() / ".passi" / "sessions"
+
+    def test_default_sessions_dir_uses_project_passi(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When a project .passi/ directory exists, sessions_dir defaults inside it.
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".passi").mkdir()
+        monkeypatch.chdir(project_dir)
+        cfg = SessionConfig()
+        assert cfg.sessions_dir == project_dir / ".passi" / "sessions"
 
     def test_checkpoint_interval_default(self):
         cfg = SessionConfig()
@@ -394,7 +411,9 @@ class TestProjectPassiDir:
         # Returns None if no .passi/ found, or a Path if one exists above
         assert result is None or (isinstance(result, Path) and result.name == ".passi")
 
-    def test_resolve_passi_dir_uses_project_first(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_resolve_passi_dir_uses_project_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         (tmp_path / ".passi").mkdir()
         result = _resolve_passi_dir()
         # May be overridden by actual project .passi/ above test temp dir

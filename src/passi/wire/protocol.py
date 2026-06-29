@@ -64,13 +64,13 @@ class Wire:
     """In-process pub/sub communication channel.
 
     Events are published by the agent or UI and received by all listeners.
-    Events are persisted to wire.jsonl for replay.
+    Events are persisted to `.passi/wire.jsonl` (or the provided path) for replay.
     """
 
     def __init__(self, wire_path: Path | None = None) -> None:
         self._listeners: list[WireListener] = []
         self._history: list[WireEvent] = []
-        self._wire_path = wire_path or Path("wire.jsonl")
+        self._wire_path = wire_path or Path(".passi/wire.jsonl")
         self._event_counter = 0
 
     def subscribe(self, listener: WireListener) -> None:

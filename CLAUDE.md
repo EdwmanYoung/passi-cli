@@ -71,7 +71,7 @@ Schema export (`to_openai_schema()`, `to_anthropic_schema()`) is automatic from 
 
 ### Audit Trail (5 layers)
 
-Execution produces this audit chain per session:
+Execution produces this audit chain per session under `.passi/sessions/{session_id}/`:
 
 - **Wire** (`wire.jsonl`) — pub/sub event bus, synchronous emit to all listeners, persisted
 - **Provenance** (`provenance.jsonl`) — per-tool-step records with checksums, exit codes, timing
@@ -79,7 +79,15 @@ Execution produces this audit chain per session:
 - **Plan** (`plan.yaml`) — structured analysis plan with step statuses
 - **Session** (`session.yaml`) — session metadata, checkpoints
 
+A global/fallback wire log is written to `.passi/wire.jsonl`.
+
 Wire event types: `USER_MESSAGE`, `AGENT_MESSAGE`, `TOOL_CALL`, `TOOL_RESULT`, `SESSION_START/END`, `PLAN_CREATED`, `PLAN_STEP_START/COMPLETE/FAILED`, etc.
+
+### Runtime Directories
+
+- `.passi/` — project-local Passi home. Contains config (`settings.yaml`, `hooks.yaml`) and runtime data (`sessions/`, `e2e_results/`, `R-lib/`, `wire.jsonl`). The entire directory is gitignored by default; commit config files only if you intend to share project-level defaults.
+- `result/` — primary analysis output directory (`result_dir`). Legacy files from the old `output/` directory are kept in `result/legacy/`.
+- `data/` — optional user-data directory (`data_dir`), gitignored.
 
 ### Config (`PassiConfig`)
 

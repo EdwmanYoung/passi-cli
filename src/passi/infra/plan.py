@@ -84,7 +84,7 @@ class AnalysisPlan(BaseModel):
 class PlanManager:
     """Manage analysis plan lifecycle and persistence.
 
-    Plans are persisted to ``./sessions/{session_id}/plan.yaml``.
+    Plans are persisted to ``.passi/sessions/{session_id}/plan.yaml``.
     """
 
     def __init__(self, session_dir: str | Path = "") -> None:

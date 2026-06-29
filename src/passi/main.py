@@ -401,7 +401,7 @@ def knowledge_formats(ctx: click.Context, domain: str | None) -> None:
 
 @main.command()
 @click.argument("pipeline_path", type=click.Path(exists=True))
-@click.option("--output", "-o", default="./output", help="Output directory")
+@click.option("--output", "-o", default="./result", help="Output directory")
 @click.pass_context
 def run(ctx: click.Context, pipeline_path: str, output: str) -> None:
     """Execute a predefined analysis pipeline (YAML workflow)."""

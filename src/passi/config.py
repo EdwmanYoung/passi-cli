@@ -174,7 +174,8 @@ def _ensure_passi_home() -> Path:
     if not settings_file.exists():
         r_home = _find_r_home("")
         r_lib = str(passi_dir / "R-lib")
-        template = SETTINGS_TEMPLATE.replace("$r_home_detected", r_home or "")
+        # Use forward slashes in YAML to avoid Windows backslash escape issues.
+        template = SETTINGS_TEMPLATE.replace("$r_home_detected", (r_home or "").replace("\\", "/"))
         if r_home:
             template = template.replace(
                 "# Auto-detected on first run — set manually only if detection fails.",
@@ -382,7 +383,7 @@ class SessionConfig(BaseSettings):
     sessions_dir: Path = Field(default_factory=lambda: _resolve_passi_dir() / "sessions")
     max_sessions: int = 100
     checkpoint_interval: int = 5  # messages between auto-checkpoints
-    wire_file: str = "wire.jsonl"
+    wire_file: str = ".passi/wire.jsonl"
 
 
 class HooksConfig(BaseSettings):

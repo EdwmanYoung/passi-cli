@@ -341,7 +341,7 @@ Agent 基于数据发现结果，向用户提议分析方案并逐项确认：
   • 显著上调: 1,247 基因 (FDR < 0.05, log2FC > 1)
   • 显著下调: 892 基因
   • Top 基因: IFI27 (log2FC=5.2, padj=1.2e-42), ...
-  • 结果文件: output/de_results_deseq2_counts.tsv
+  • 结果文件: result/de_results_deseq2_counts.tsv
 
 ━━━ Step 3/5: 富集分析 ━━━
 ...
@@ -387,7 +387,7 @@ Agent 基于数据发现结果，向用户提议分析方案并逐项确认：
 分析完成后，Agent 将所有结果组织到结构化输出目录：
 
 ```
-output/
+result/
 └── 20260625_001_covid19_transcriptomics/     # session_id + project
     ├── analysis_report.html                   # 完整分析报告
     ├── analysis_report.md                     # Markdown 版本
@@ -447,7 +447,7 @@ output/
                       [10] 解读 + 建议
 
   👤 "/export" ──────→ [11] 输出: 生成报告 + 图表
-                      "报告已保存到 output/20260625_001/"
+                      "报告已保存到 result/20260625_001/"
 
   👤 "/quit" ────────→ [12] 清理: 保存会话, 记录 provenance
 ```

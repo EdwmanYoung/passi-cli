@@ -40,6 +40,7 @@ digitagent/
 ├── CLAUDE.md                   # Claude Code specific commands/conventions
 ├── AGENTS.md                   # This file
 ├── .env.example                # Template for LLM/R configuration
+├── .gitignore                  # Git ignore rules
 ├── docs/
 │   ├── architecture.md         # Layered architecture spec
 │   ├── design.md               # Design principles & conventions (Chinese)
@@ -48,9 +49,16 @@ digitagent/
 ├── pipelines/                  # Empty — reserved for user YAML workflows
 ├── scripts/
 │   └── setup_r_portable.ps1    # PowerShell helper to install R-Portable
-├── sessions/                   # Runtime session directories
-├── result/                     # Analysis outputs + provenance.jsonl
-├── output/                     # Legacy/generated analysis outputs
+├── .passi/                     # Project-local Passi config + runtime data
+│   ├── settings.yaml           # Project-level settings (kept in git)
+│   ├── hooks.yaml              # User-configurable event hooks (kept in git)
+│   ├── sessions/               # Runtime session directories
+│   ├── e2e_results/            # End-to-end test outputs
+│   ├── R-lib/                  # Project-local R package library
+│   └── wire.jsonl              # Global / fallback wire audit log
+├── result/                     # Primary analysis outputs + provenance.jsonl
+│   └── legacy/                 # Migrated legacy outputs (old output/)
+├── data/                       # User data directory (optional, gitignored)
 ├── test_dataset/               # Multi-omics public test data collection
 ├── src/
 │   ├── passi/                  # Main package
@@ -114,6 +122,11 @@ digitagent/
 │       ├── test_ui/
 │       └── test_wire/
 ```
+
+**Runtime directory layout:**
+- `.passi/` is the project-local Passi home directory. It holds project-level config (`settings.yaml`, `hooks.yaml`) plus runtime data (`sessions/`, `e2e_results/`, `R-lib/`, `wire.jsonl`). The entire directory is gitignored by default; commit config files only if you intend to share project-level defaults.
+- `result/` is the configured primary output directory (`result_dir`). Legacy files from the old `output/` directory are preserved under `result/legacy/`.
+- `data/` is the optional user-data directory (`data_dir`) and is gitignored.
 
 **Note:** Some items described in `docs/architecture.md` (sub-agents, `python_executor.py`, Docker sandbox, dedicated API routes/schemas) are **not yet implemented**. The actual tool execution is handled by `exec_tools.py` using `subprocess.Popen` and by `r_executor.py`.
 
@@ -293,6 +306,7 @@ To register a new tool:
 - Sub-agents (`OmicsExpert`, `StatsExpert`, etc.) and `soul/subagents/` do not exist.
 - `executors/python_executor.py` and `executors/sandbox.py` do not exist; Python execution lives in `tools/exec_tools.py`.
 - Predefined pipelines in `knowledge/pipelines.py` are static definitions only; the `passi run` command loads YAML but does not execute pipeline steps end-to-end.
+- `PassiConfig.output_dir` is deprecated; use `result_dir` (`./result` by default). Legacy contents of the old `output/` directory were moved to `result/legacy/`.
 
 ## Useful References
 

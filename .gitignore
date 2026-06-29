@@ -1,21 +1,44 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .eggs/
 dist/
 build/
-.pytest_cache/
 *.pyc
-.DS_Store
+
+# Environment / secrets
 .env
+
+# Logs
 *.log
-sessions/
+
+# OS
+.DS_Store
+
+# Passi project-local home (config + runtime data)
+# By default the whole directory is ignored. If you want to share project-level
+# defaults, explicitly add .passi/settings.yaml and/or .passi/hooks.yaml.
+.passi/
+
+# Legacy / generated output directories
 output/
 data/
-R-lib/
-R/
-test_dataset/
+result/
+sessions/
 wire.jsonl
 e2e_results/
 audit_session_*/
+
+# Project-local R environment
+R/
+R-lib/
+
+# Test data (large/binary files)
+test_dataset/
+
+# Tool caches / coverage reports
+.pytest_cache/
+.ruff_cache/
+htmlcov/
 .claude/

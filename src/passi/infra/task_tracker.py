@@ -45,7 +45,7 @@ class Task(BaseModel):
 class TaskTracker:
     """Tracks tool execution tasks with timing and cross-references.
 
-    Tasks are persisted to ``./sessions/{session_id}/tasks.jsonl``.
+    Tasks are persisted to ``.passi/sessions/{session_id}/tasks.jsonl``.
     """
 
     def __init__(self, session_dir: str | Path = "") -> None:

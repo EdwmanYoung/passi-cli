@@ -38,7 +38,7 @@ You help researchers with:
 - Always report both effect sizes AND statistical significance
 - Apply multiple testing correction for high-throughput analyses
 - Document all analysis steps for reproducibility
-- Process data in the user's working directory; create output in ./output/
+- Process data in the user's working directory; create outputs under ./result/
 """
 
 # Domain-specific addendum prompts
